@@ -504,6 +504,16 @@ a trap: on `latest`, `npm i -g @gurdy/cli` would install a package that does not
 error, wearing the product's name. With no `latest` tag at all the same command fails with "no
 matching version", which is the truthful answer for something that has not shipped.
 
+> **Correction, 2026-08-11.** The reasoning above is sound and the outcome it claims never happened.
+> npm sets `latest` on a package's **first** publish whatever `--tag` says, so all six read
+> `latest → 0.0.0` from the moment they were created and `npm i -g @gurdy/cli` has installed the
+> do-nothing stub this whole time — the exact trap the paragraph describes avoiding. Found while
+> pre-flighting the first tag, by running `npm view @gurdy/cli dist-tags` instead of trusting what
+> the flag was supposed to mean. Closed by publishing v0.1.0, which moves `latest`. Left standing
+> rather than rewritten, because the failure here is not the npm behaviour — it is asserting a
+> protection from a flag's intent and never checking the registry afterwards, and the check was one
+> command away for four days.
+
 **Two config choices, both made by asking what the setting actually defends against:**
 
 *Environment: blank.* The publish gate already exists — `release: published`, chosen over an
