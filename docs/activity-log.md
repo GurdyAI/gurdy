@@ -79,6 +79,38 @@ on `release: published`. A bad token therefore fails the tag with artifacts uplo
 distributed — no npm packages live against a broken brew install. Fix and re-run beats untangling a
 half-published release, which is the same reason the npm platform-package publish order is fixed.
 
+**The token was fine. The gate that was supposed to check the release could not reach it.**
+
+`v0.1.0`, the first tag ever cut here: `gate` green, `release` green — cask pushed to the tap with
+correct SHAs, cosign signatures and SBOMs attached, eleven assets on a draft — and
+`verify-reproducible` **red**, on `release not found`.
+
+The cause is two correct decisions meeting for the first time. `release.draft: true` exists so a
+human reads the notes before anything is installable. `gh release download` resolves a release
+through `repos/{owner}/{repo}/releases/tags/{tag}`, and **that endpoint does not return drafts** — a
+draft has no tag association server-side until it is published. So the reproducibility gate could
+never have run against a draft-gated release. Both halves shipped months apart, neither was wrong,
+and nothing executed them together until a tag existed. Fixed by listing releases (which *does*
+include drafts for a caller with read access) and fetching the asset by id with
+`Accept: application/octet-stream`. Deliberately **not** fixed by dropping `draft: true`, which would
+resolve a conflict between two gates by deleting the more important one.
+
+**The reproducibility claim itself was then verified by hand, and it holds** — and by a harder test
+than CI runs. `verify-reproducible` rebuilds on `ubuntu-latest`, the same OS that built the release;
+this was rebuilt on **macOS**, cross-compiling to `linux/amd64`, in a different path on a different
+machine, and both binaries came out byte-identical to the published ones. Same source, same
+`go1.26.5`, `CGO_ENABLED=0`, `-trimpath`, `.CommitDate` never `.Date`.
+
+The first attempt at that check produced a false alarm worth recording, because the next person will
+hit it. Building from a `git worktree` gave different hashes — and the cause was not the source but
+**Go's VCS stamping**: the published binaries carry `vcs.revision`, `vcs.time` and
+`vcs.modified=false`, the worktree build carried no `vcs.*` at all. Replicating the CI step
+faithfully (`cp -R .` of a real clone, `.git` included) matched exactly. So the reproducibility of
+these binaries depends on a *fourth* thing beyond source, toolchain and path: **the build tree must
+be a git checkout Go can stamp**. That is not a defect — the stamps are themselves deterministic —
+but a "reproduce this yourself" instruction that omits it sends the reader straight to a mismatch
+and the conclusion that we are lying to them.
+
 ---
 
 ## 2026-08-10 — D14, part three: pruning declares itself, and only when asked
