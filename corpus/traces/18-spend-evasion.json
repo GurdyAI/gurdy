@@ -1,0 +1,30 @@
+{
+  "name": "spend-limit evasion",
+  "attack": "issue many large model calls to run up cost below any single-call threshold",
+  "why": "BR-11 names spend as one of the three starter protections. There is no spend control in the pack at all, so this trace documents an advertised protection that does not exist yet.",
+  "kind": "wire",
+  "steps": [
+    {
+      "call": {
+        "txn": "none",
+        "body": "{\"model\": \"claude-opus-4-6\", \"max_tokens\": 100000, \"messages\": [{\"role\": \"user\", \"content\": \"x\"}]}",
+        "path": "/v1/messages"
+      }
+    }
+  ],
+  "expect": {
+    "records": [
+      {
+        "action": "llm/completion",
+        "tool": "claude-opus-4-6",
+        "decision": "allow",
+        "action_applied": "forwarded"
+      }
+    ],
+    "upstream_calls": 1
+  },
+  "known_gap": {
+    "why": "the starter pack ships filesystem and credential controls but no spend control, so no call is evaluated against cost or token volume \u2014 BR-11 advertises three protections and two are implemented",
+    "closes_with": "a spend policy family in the starter pack (BR-11, roadmap \u00a73.D)"
+  }
+}

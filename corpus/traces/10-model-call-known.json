@@ -1,0 +1,26 @@
+{
+  "name": "model call to a known provider",
+  "attack": "an ordinary completion request",
+  "why": "The negative case: a governed model call that should NOT flag. Without it the egress control could match everything and still look correct.",
+  "kind": "wire",
+  "steps": [
+    {
+      "call": {
+        "txn": "none",
+        "body": "{\"model\": \"claude-opus-4-6\", \"max_tokens\": 64, \"messages\": [{\"role\": \"user\", \"content\": \"summarise\"}]}",
+        "path": "/v1/messages"
+      }
+    }
+  ],
+  "expect": {
+    "records": [
+      {
+        "action": "llm/completion",
+        "tool": "claude-opus-4-6",
+        "decision": "allow",
+        "action_applied": "forwarded"
+      }
+    ],
+    "upstream_calls": 1
+  }
+}

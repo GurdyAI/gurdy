@@ -1,0 +1,88 @@
+{
+  "name": "lineage extends across a spawn",
+  "why": "\u00a75.9: sub-agent spawns inherit and extend lineage without further developer code. An SDK that loses the chain across a spawn is the failure this case exists to catch.",
+  "steps": [
+    {
+      "mint": {
+        "as": "root",
+        "agent": "orchestrator",
+        "human_actor": "alice@example.com",
+        "scope": {
+          "compartments": [
+            "*"
+          ],
+          "resource_types": [
+            "*"
+          ],
+          "actions": [
+            "*"
+          ],
+          "purpose": "ticket-9"
+        }
+      }
+    },
+    {
+      "derive": {
+        "from": "root",
+        "as": "child",
+        "agent": "fetcher",
+        "scope": {
+          "compartments": [
+            "*"
+          ],
+          "resource_types": [
+            "*"
+          ],
+          "actions": [
+            "read"
+          ],
+          "purpose": "ticket-9"
+        }
+      }
+    },
+    {
+      "derive": {
+        "from": "child",
+        "as": "grandchild",
+        "agent": "parser",
+        "scope": {
+          "compartments": [
+            "*"
+          ],
+          "resource_types": [
+            "*"
+          ],
+          "actions": [
+            "read"
+          ],
+          "purpose": "ticket-9"
+        }
+      }
+    },
+    {
+      "call": {
+        "txn": "grandchild",
+        "tool": "read_file",
+        "args": {
+          "path": "/workspace/notes.txt"
+        }
+      }
+    }
+  ],
+  "expect": {
+    "records": [
+      {
+        "action": "mcp/tools_call",
+        "assertion_status": "valid",
+        "asserted_principal": "parser",
+        "asserted_human_actor": "alice@example.com",
+        "lineage": [
+          "orchestrator",
+          "fetcher",
+          "parser"
+        ],
+        "answered": true
+      }
+    ]
+  }
+}

@@ -1,0 +1,159 @@
+# Release pipeline. `gurdy-verify` is the reason this file is fussy.
+#
+# The product's central claim is that a third party can check an export without
+# trusting us. That collapses if they cannot also check the *verifier*: a binary
+# we built, signed with our key, that we assert is honest, is just us asserting
+# again one level down. So NFR-9's "reproducible builds" is load-bearing here,
+# not hygiene, and two defaults would quietly break it:
+#
+#   1. GoReleaser's stock ldflags embed `.Date` — the wall-clock build time.
+#      Two builds of the same commit then differ, and nobody can reproduce
+#      either. We use `.CommitDate`, which is a property of the commit.
+#   2. Without `-trimpath` the build directory is baked into the binary, so a
+#      third party rebuilding in their own checkout gets different bytes.
+#      Measured, not assumed: the same source built at two paths produced two
+#      different hashes until this was added.
+#
+# `mod_timestamp` pins archive member mtimes to the commit for the same reason.
+#
+# The reproduction recipe is in docs/reproducible-builds.md and is tested in CI
+# — a recipe nobody runs is a claim, and this project does not ship those.
+version: 2
+
+project_name: gurdy
+
+builds:
+  # gurdy-proxy and gurdy-verify ship. gurdy-conform and gurdy-bench do not:
+  # they are test harnesses, and shipping them would imply a support surface we
+  # do not intend and would put the corpus runner on end-user machines.
+  - id: gurdy-proxy
+    dir: proxy
+    main: ./cmd/gurdy-proxy
+    binary: gurdy-proxy
+    env: [CGO_ENABLED=0]
+    goos: [darwin, linux]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    mod_timestamp: "{{ .CommitTimestamp }}"
+    ldflags: &ldflags
+      - -s -w
+      - -X github.com/GurdyAI/gurdy/proxy/internal/version.version={{ .Version }}
+      - -X github.com/GurdyAI/gurdy/proxy/internal/version.commit={{ .FullCommit }}
+      # .CommitDate, never .Date — see the header.
+      - -X github.com/GurdyAI/gurdy/proxy/internal/version.date={{ .CommitDate }}
+
+  - id: gurdy-verify
+    dir: proxy
+    main: ./cmd/gurdy-verify
+    binary: gurdy-verify
+    env: [CGO_ENABLED=0]
+    goos: [darwin, linux]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    mod_timestamp: "{{ .CommitTimestamp }}"
+    ldflags: *ldflags
+
+archives:
+  - id: default
+    ids: [gurdy-proxy, gurdy-verify]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE
+      - NOTICE
+      - README.md
+      - SECURITY.md
+
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+sboms:
+  # One SBOM per archive (NFR-9). Attached to the release so a consumer can run
+  # their own vulnerability scan without trusting our summary of what is inside.
+  - id: archive-sbom
+    artifacts: archive
+
+signs:
+  # Keyless signing via GitHub Actions OIDC. Deliberately not a long-lived
+  # private key: there is no key for us to lose, rotate, or be compelled to use,
+  # and every signature lands in Rekor's public transparency log — so a
+  # signature we did not make is publicly visible rather than merely denied.
+  # Fitting for a product whose whole argument is verifiable evidence.
+  #
+  # Verify a download with:
+  #   cosign verify-blob --certificate <file>.pem --signature <file>.sig \
+  #     --certificate-identity-regexp 'https://github.com/GurdyAI/gurdy/.*' \
+  #     --certificate-oidc-issuer https://token.actions.githubusercontent.com <file>
+  - cmd: cosign
+    signature: "${artifact}.sig"
+    certificate: "${artifact}.pem"
+    args:
+      - sign-blob
+      - "--output-signature=${signature}"
+      - "--output-certificate=${certificate}"
+      - "${artifact}"
+      - "--yes"
+    artifacts: checksum
+    output: true
+
+homebrew_casks:
+  # The primary macOS path (we ship unnotarized — no Apple Developer account).
+  #
+  # The quarantine hook below is not boilerplate, it is the entire reason this
+  # works. Homebrew *formulae* are exempt from Gatekeeper, but casks are not:
+  # a cask installing an unsigned binary leaves com.apple.quarantine on it, and
+  # the user gets "cannot be opened because the developer cannot be verified" —
+  # on a security tool, which is about the worst possible first impression.
+  # GoReleaser deprecated `brews` in favour of casks, so inheriting the old
+  # formula behaviour is not an option; the hook restores it explicitly.
+  - name: gurdy
+    ids: [default]
+    binaries: [gurdy-proxy, gurdy-verify]
+    repository:
+      owner: GurdyAI
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    directory: Casks
+    homepage: https://github.com/GurdyAI/gurdy
+    description: A flight recorder for AI agents — governs agent tool calls and writes a verifiable decision ledger
+    license: Apache-2.0
+    hooks:
+      post:
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr",
+                           args: ["-dr", "com.apple.quarantine", "#{staged_path}/gurdy-proxy"],
+                           sudo: false
+            system_command "/usr/bin/xattr",
+                           args: ["-dr", "com.apple.quarantine", "#{staged_path}/gurdy-verify"],
+                           sudo: false
+          end
+
+release:
+  draft: true # a human reads the notes before anyone can install it
+  prerelease: auto
+  footer: |
+    ## Verifying this release
+
+    Every artifact is signed with [cosign](https://docs.sigstore.dev/) keyless
+    signing — no private key exists to steal, and each signature is recorded in
+    the public Rekor transparency log.
+
+    ```bash
+    cosign verify-blob --certificate checksums.txt.pem --signature checksums.txt.sig \
+      --certificate-identity-regexp 'https://github.com/GurdyAI/gurdy/.*' \
+      --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+      checksums.txt
+    sha256sum -c checksums.txt --ignore-missing
+    ```
+
+    **Or rebuild it yourself.** `gurdy-verify` is the tool you would use to check
+    evidence you do not trust, so you should not have to trust our build of it
+    either. See [docs/reproducible-builds.md](https://github.com/GurdyAI/gurdy/blob/main/docs/reproducible-builds.md)
+    — the binaries are byte-for-byte reproducible from this tag.
+
+changelog:
+  use: github
+  sort: asc
+  filters:
+    exclude: ["^test:", "^chore:", "^ci:"]

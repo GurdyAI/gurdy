@@ -1,0 +1,66 @@
+{
+  "name": "model call shares the chain",
+  "why": "v0.8.4: the model call is an action in the same taxonomy, in the same chain, under the same identity as the agent's tool calls. An SDK that instruments tool calls but not model calls produces half a record of what the agent did.",
+  "steps": [
+    {
+      "mint": {
+        "as": "root",
+        "agent": "orchestrator",
+        "human_actor": "alice@example.com",
+        "scope": {
+          "compartments": [
+            "*"
+          ],
+          "resource_types": [
+            "*"
+          ],
+          "actions": [
+            "*"
+          ],
+          "purpose": "*"
+        }
+      }
+    },
+    {
+      "call": {
+        "txn": "root",
+        "tool": "read_file",
+        "args": {
+          "path": "/workspace/notes.txt"
+        }
+      }
+    },
+    {
+      "call": {
+        "txn": "root",
+        "path": "/v1/messages",
+        "body": "{\"model\":\"claude-opus-4-6\",\"max_tokens\":512,\"messages\":[{\"role\":\"user\",\"content\":\"summarize\"}]}"
+      }
+    }
+  ],
+  "expect": {
+    "records": [
+      {
+        "action": "mcp/tools_call",
+        "tool": "read_file",
+        "assertion_status": "valid",
+        "asserted_principal": "orchestrator",
+        "lineage": [
+          "orchestrator"
+        ]
+      },
+      {
+        "action": "llm/completion",
+        "tool": "claude-opus-4-6",
+        "assertion_status": "valid",
+        "asserted_principal": "orchestrator",
+        "asserted_human_actor": "alice@example.com",
+        "same_txn_as": 0,
+        "lineage": [
+          "orchestrator"
+        ]
+      }
+    ],
+    "upstream_calls": 2
+  }
+}

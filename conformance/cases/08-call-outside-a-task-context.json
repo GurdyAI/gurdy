@@ -1,0 +1,60 @@
+{
+  "name": "a call outside a task context degrades, it does not fabricate",
+  "why": "\u00a75.9: the task boundary is marked once and instrumentation is automatic \u2014 so a call that happens *outside* any task context is a real, common case. The SDK must let it through unenriched and must not invent a credential to fill the hole: a fabricated assertion would put a claim nobody made into the evidence. Unlike case 04 this is SDK-expressible, and an SDK driver must exercise it through its own public surface (a call outside @gurdy.task), not by bypassing itself.",
+  "kind": "sdk",
+  "steps": [
+    {
+      "mint": {
+        "as": "root",
+        "agent": "orchestrator",
+        "scope": {
+          "compartments": [
+            "*"
+          ],
+          "resource_types": [
+            "*"
+          ],
+          "actions": [
+            "*"
+          ],
+          "purpose": "*"
+        }
+      }
+    },
+    {
+      "call": {
+        "txn": "root",
+        "tool": "read_file",
+        "args": {
+          "path": "/workspace/notes.txt"
+        }
+      }
+    },
+    {
+      "call": {
+        "txn": "none",
+        "tool": "read_file",
+        "args": {
+          "path": "/workspace/other.txt"
+        }
+      }
+    }
+  ],
+  "expect": {
+    "upstream_calls": 2,
+    "records": [
+      {
+        "action": "mcp/tools_call",
+        "assertion_status": "valid",
+        "asserted_principal": "orchestrator"
+      },
+      {
+        "action": "mcp/tools_call",
+        "assertion_status": "absent",
+        "principal_tier": "attested-coarse",
+        "no_asserted_fields": true,
+        "answered": true
+      }
+    ]
+  }
+}

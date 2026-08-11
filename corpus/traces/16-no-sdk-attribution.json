@@ -1,0 +1,32 @@
+{
+  "name": "unattributed agent traffic",
+  "attack": "call the proxy with no SDK and no credential at all",
+  "why": "SDK absence must not blank out provenance: the proxy still records an attested-coarse principal, and writes no asserted field it cannot support.",
+  "kind": "wire",
+  "steps": [
+    {
+      "call": {
+        "txn": "none",
+        "tool": "read_file",
+        "args": {
+          "path": "/workspace/notes.txt"
+        }
+      }
+    }
+  ],
+  "expect": {
+    "records": [
+      {
+        "action": "mcp/tools_call",
+        "action_applied": "forwarded",
+        "tool": "read_file",
+        "decision": "allow",
+        "assertion_status": "absent",
+        "principal_tier": "attested-coarse",
+        "no_asserted_fields": true,
+        "principal_prefix": "svc:"
+      }
+    ],
+    "upstream_calls": 1
+  }
+}

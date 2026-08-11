@@ -1,0 +1,24 @@
+{
+  "name": "malformed-MCP evasion: undecodable params",
+  "attack": "send a tools/call whose params cannot be decoded, hoping the proxy skips what it cannot parse",
+  "why": "An undecodable tools/call must be recorded indeterminate, not skipped. Skipping is a one-line bypass of the entire product.",
+  "kind": "wire",
+  "steps": [
+    {
+      "call": {
+        "txn": "none",
+        "body": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":\"not-an-object\"}"
+      }
+    }
+  ],
+  "expect": {
+    "records": [
+      {
+        "action": "http/request",
+        "decision": "indeterminate",
+        "action_applied": "failed-open"
+      }
+    ],
+    "upstream_calls": 1
+  }
+}

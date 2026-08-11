@@ -1,0 +1,53 @@
+{
+  "name": "scope-widening spawn chain",
+  "attack": "derive a child credential with broader scope than the parent holds",
+  "why": "\u00a75.2 normative: a child scope that is not provably a narrowing is rejected, never clamped.",
+  "kind": "wire",
+  "steps": [
+    {
+      "mint": {
+        "as": "root",
+        "agent": "orchestrator",
+        "scope": {
+          "compartments": [
+            "billing"
+          ],
+          "resource_types": [
+            "invoice"
+          ],
+          "actions": [
+            "read"
+          ],
+          "purpose": "audit"
+        }
+      }
+    },
+    {
+      "derive": {
+        "from": "root",
+        "as": "wider",
+        "agent": "greedy",
+        "expect_refused": true,
+        "scope": {
+          "compartments": [
+            "*"
+          ],
+          "resource_types": [
+            "invoice"
+          ],
+          "actions": [
+            "read"
+          ],
+          "purpose": "audit"
+        }
+      }
+    }
+  ],
+  "expect": {
+    "records": [],
+    "upstream_calls": 0,
+    "driver_error_contains": [
+      "narrowing"
+    ]
+  }
+}

@@ -1,0 +1,34 @@
+{
+  "name": "destructive op: destructive semantics under a benign name",
+  "attack": "call fs_write with truncate semantics to destroy a file without a destructive-sounding verb",
+  "why": "The same aliasing weakness from the other direction: not a rename of a known-bad tool but a known-good name doing the bad thing. Signature binding does not fix this one either \u2014 it needs argument semantics.",
+  "kind": "wire",
+  "steps": [
+    {
+      "call": {
+        "txn": "none",
+        "tool": "fs_write",
+        "args": {
+          "path": "/workspace/report.md",
+          "mode": "truncate",
+          "content": ""
+        }
+      }
+    }
+  ],
+  "expect": {
+    "records": [
+      {
+        "action": "mcp/tools_call",
+        "action_applied": "forwarded",
+        "tool": "fs_write",
+        "decision": "allow"
+      }
+    ],
+    "upstream_calls": 1
+  },
+  "known_gap": {
+    "why": "no control inspects arguments for destructive semantics; only the tool name is considered, so a benign-sounding tool with destructive arguments passes",
+    "closes_with": "argument-level controls in the agent-security pack (roadmap \u00a73.D)"
+  }
+}

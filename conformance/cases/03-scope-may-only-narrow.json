@@ -1,0 +1,71 @@
+{
+  "name": "scope may only narrow",
+  "why": "\u00a75.2 normative: a child scope that is not provably a narrowing is rejected, never clamped and never silently allowed. An SDK must surface the refusal rather than retrying with less scope or proceeding uncredentialed.",
+  "steps": [
+    {
+      "mint": {
+        "as": "root",
+        "agent": "orchestrator",
+        "scope": {
+          "compartments": [
+            "billing"
+          ],
+          "resource_types": [
+            "invoice"
+          ],
+          "actions": [
+            "read"
+          ],
+          "purpose": "audit"
+        }
+      }
+    },
+    {
+      "derive": {
+        "from": "root",
+        "as": "wider",
+        "agent": "greedy",
+        "expect_refused": true,
+        "scope": {
+          "compartments": [
+            "*"
+          ],
+          "resource_types": [
+            "invoice"
+          ],
+          "actions": [
+            "read"
+          ],
+          "purpose": "audit"
+        }
+      }
+    },
+    {
+      "derive": {
+        "from": "root",
+        "as": "sideways",
+        "agent": "greedy",
+        "expect_refused": true,
+        "scope": {
+          "compartments": [
+            "hr"
+          ],
+          "resource_types": [
+            "invoice"
+          ],
+          "actions": [
+            "read"
+          ],
+          "purpose": "audit"
+        }
+      }
+    }
+  ],
+  "expect": {
+    "records": [],
+    "driver_error_contains": [
+      "narrowing"
+    ],
+    "upstream_calls": 0
+  }
+}

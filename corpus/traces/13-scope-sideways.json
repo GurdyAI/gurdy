@@ -1,0 +1,53 @@
+{
+  "name": "incomparable scope in a spawn chain",
+  "attack": "derive into a sibling compartment the parent never held \u2014 neither wider nor narrower",
+  "why": "Incomparable is not narrower. A partial order that silently allowed sideways moves would let a billing agent spawn an HR agent.",
+  "kind": "wire",
+  "steps": [
+    {
+      "mint": {
+        "as": "root",
+        "agent": "orchestrator",
+        "scope": {
+          "compartments": [
+            "billing"
+          ],
+          "resource_types": [
+            "invoice"
+          ],
+          "actions": [
+            "read"
+          ],
+          "purpose": "audit"
+        }
+      }
+    },
+    {
+      "derive": {
+        "from": "root",
+        "as": "sideways",
+        "agent": "greedy",
+        "expect_refused": true,
+        "scope": {
+          "compartments": [
+            "hr"
+          ],
+          "resource_types": [
+            "invoice"
+          ],
+          "actions": [
+            "read"
+          ],
+          "purpose": "audit"
+        }
+      }
+    }
+  ],
+  "expect": {
+    "records": [],
+    "upstream_calls": 0,
+    "driver_error_contains": [
+      "narrowing"
+    ]
+  }
+}

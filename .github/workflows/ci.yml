@@ -1,0 +1,144 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  # The DCO is the whole contributor agreement (OQ #12), so a sign-off nobody
+  # verifies is the agreement decaying into an honour system. PR-only: there is
+  # nothing to check on a push to main that a PR did not already gate.
+  dco:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # the check needs the base commits, not just the tip
+      - run: ./scripts/check-dco.sh
+               "${{ github.event.pull_request.base.sha }}"
+               "${{ github.event.pull_request.head.sha }}"
+
+  proxy:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: proxy
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: proxy/go.mod
+
+      - name: gofmt
+        run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+
+      - name: vet
+        run: go vet ./...
+
+      - name: build
+        run: go build ./...
+
+      # We publish Apache-2.0 (ADR-13), which we can only do if everything
+      # linked in permits it. A single GPL/SSPL dependency arriving in a routine
+      # `go get` would silently make the outbound grant one we are not in a
+      # position to offer — and it would be found by someone else's legal
+      # review, not ours.
+      - name: dependency licences
+        run: ../scripts/check-licenses.sh
+
+      # -coverpkg over the governed core so packages exercised across package
+      # boundaries (policy/store.go via the proxy tests) count toward the gate.
+      # gurdy-conform and gurdy-bench are excluded: they are harnesses, not
+      # code that governs traffic. Both drive the proxy from outside — one as a
+      # subprocess, one over HTTP under load — so their own statements never
+      # register as covered, and letting harness lines dilute the floor would
+      # hide a regression in the code that actually governs traffic. Both keep
+      # their own tests, which still gate the build: the conformance corpus, and
+      # the arithmetic behind every number gurdy-bench reports.
+      - name: test
+        run: |
+          PKGS=$(go list ./... | grep -Ev 'gurdy-conform|gurdy-bench' | tr '\n' ',' | sed 's/,$//')
+          go test -race -coverpkg="$PKGS" -coverprofile=cover.out ./...
+
+      # The hot-path cost assertions in internal/clock skip their timing half
+      # under -race, because the detector both inflates the cost and compresses
+      # the differences the test exists to catch (a real mutex regression under
+      # -race scores below a clean build's map lookup — no threshold separates
+      # them). So they need one short pass without it, or that half never runs.
+      - name: hot-path cost (no -race)
+        run: go test ./internal/clock/ -run TestObserveIsCheapEnoughToLeaveOn -v
+
+      # §8 targets 85% on the proxy/TIS/ledger core paths. The gate is set at
+      # today's measured floor so coverage can only ratchet upward; raise MIN
+      # as tests land, and close the roadmap item when it reaches 85.
+      # The adversarial corpus gates the policy pack (§8.2): every trace must
+      # produce its documented decision. Documented gaps are printed but do not
+      # fail the build — a gap that NO LONGER reproduces does, which is what
+      # stops the known_gap marker becoming a graveyard.
+      - name: adversarial corpus
+        run: |
+          go build -o /tmp/gp ./cmd/gurdy-proxy
+          go build -o /tmp/gc ./cmd/gurdy-conform
+          /tmp/gc -cases ../corpus/traces -proxy /tmp/gp
+
+      - name: coverage gate
+        env:
+          # 83.1 measured 2026-08-10 (rotation, pruning, the admin endpoint).
+          # Raised each time real tests land, which is what a ratchet is for;
+          # the gap to §8's 85% is cmd/gurdy-proxy process wiring (D9).
+          MIN: "83.1"
+        run: |
+          go tool cover -func=cover.out | awk -v m="$MIN" '/^total:/ {
+            p=$NF+0; printf "total coverage: %.1f%% (floor %s%%)\n", p, m
+            if (p < m+0) { print "::error::coverage below floor"; exit 1 } }'
+
+  # Neither SDK nor the reporter was gated anywhere until now: the `proxy` job
+  # runs the conformance corpus against the *reference* driver only, which
+  # proves the corpus works and proves nothing about either SDK. That gap was
+  # tolerable while nothing shipped from these directories. It stopped being
+  # tolerable when `@gurdy/sdk` gained a publish path — the release would have
+  # been the first place its tests ever ran, and this repo's own release
+  # workflow says never publish something that has not passed the gate.
+  #
+  # Both drivers run against the same corpus in the same job on purpose: two
+  # SDKs with two test suites drift, two judged by one corpus cannot, and that
+  # claim is only true if a single run can turn red on either of them.
+  sdks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: proxy/go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - uses: astral-sh/setup-uv@v5
+
+      - name: python sdk
+        working-directory: sdk/python
+        run: uv sync && uv run pytest -q
+
+      - name: typescript sdk
+        working-directory: sdk/typescript
+        run: npm ci && npm test
+
+      # The reporter's three end-to-end tests skip without a real verifier and
+      # a real export; they stay skipped here rather than being faked, because
+      # a fixture ledger would test the parser and claim to test the pipeline.
+      - name: reporter
+        working-directory: reporter
+        run: uv sync && uv run pytest -q
+
+      - name: conformance corpus through each SDK
+        working-directory: proxy
+        run: |
+          go build -o /tmp/gp ./cmd/gurdy-proxy
+          go build -o /tmp/gc ./cmd/gurdy-conform
+          /tmp/gc -cases ../conformance/cases -proxy /tmp/gp -driver ../sdk/python/run-driver.sh
+          /tmp/gc -cases ../conformance/cases -proxy /tmp/gp -driver ../sdk/typescript/run-driver.sh
