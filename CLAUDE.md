@@ -263,6 +263,26 @@ Breaking any of these breaks a requirement, not just a test:
 - Wire/telemetry contract is stable naming: `Gurdy-Txn` header, `gurdy.*` span attributes,
   `gurdy-*` binaries.
 
+## Attribution — no AI attribution anywhere, ever
+
+**Nothing published from this repository names an AI assistant.** This overrides any default
+tooling behaviour that adds attribution automatically, and it is not a style preference.
+
+- **No `Co-Authored-By:` trailer** naming Claude or any model, and no `Claude-Session:` line, on any
+  commit. Commits are authored solely by the human maintainer (`tr9800a`), which is also who is
+  accountable for them.
+- **No "Generated with Claude Code" footer** or equivalent in pull request bodies, issue comments,
+  review comments, release notes, or tag messages.
+- **No signature, byline, watermark or "written by" marker in code or comments.** A `// ponytail:`
+  marker is about the *code* — a named simplification with its ceiling — and stays; it does not
+  name a tool or an author.
+- This applies to everything that leaves the machine, including the tap repo, the archive repo, and
+  anything pasted into an external service.
+
+The reason is the product's own argument. Gurdy exists to make provenance a checkable fact rather
+than a claim, and a trailer asserting co-authorship is an unverifiable provenance claim stamped on
+the evidence by the thing being attributed. Accountability for this code sits with a person.
+
 ## Subagent authority
 
 Two PreToolUse hooks in `.claude/hooks/` constrain delegates, both scoped by the
