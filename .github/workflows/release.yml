@@ -88,6 +88,21 @@ jobs:
           # repo (GurdyAI/homebrew-tap), which GITHUB_TOKEN cannot grant.
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
 
+      # Handed to verify-reproducible rather than re-downloaded from the
+      # release, because the release is a DRAFT and GitHub shows drafts only to
+      # callers with *push* access. Reading them back would mean granting the
+      # verification job `contents: write` — a verifier holding write access to
+      # the artifact it verifies, which is a worse property than the one it
+      # would buy. These are the same bytes that were uploaded as assets and
+      # the same ones `checksums.txt` was cosign-signed over, so nothing is
+      # lost by comparing here instead.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-linux-amd64
+          path: dist/gurdy_*_linux_amd64.tar.gz
+          if-no-files-found: error # never let the gate compare nothing
+          retention-days: 7
+
 
   # npm and PyPI both repackage the SAME binaries GoReleaser just built, so
   # they consume dist/ as an artifact rather than rebuilding. Rebuilding would
@@ -242,43 +257,38 @@ jobs:
           test -s /tmp/rebuilt.txt || { echo "::error::rebuild produced no binaries"; exit 1; }
           cat /tmp/rebuilt.txt
 
+      # The bytes come from the release job, NOT from the GitHub release. Two
+      # attempts at reading them back from the release both failed, and the
+      # second failure is the instructive one:
+      #
+      #   1. `gh release download <tag>` resolves through
+      #      `releases/tags/{tag}`, which returns 404 for a draft — a draft has
+      #      no tag association server-side until it is published, and
+      #      `release.draft: true` is deliberate (a human reads the notes first).
+      #   2. Listing releases *does* include drafts, but only for callers with
+      #      **push** access. Under this job's `contents: read` the list simply
+      #      comes back without them.
+      #
+      # The available fix for (2) was `contents: write`, and it is the wrong
+      # one: it hands the verification job write access to the artifact it is
+      # verifying, which is a strictly worse property than the one it buys.
+      # These are the same bytes uploaded as release assets and the same ones
+      # `checksums.txt` was cosign-signed over, so comparing them here costs
+      # nothing and keeps this job unable to touch what it checks.
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-linux-amd64
+          path: /tmp/pub
+
       - name: compare against the released binaries
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          TAG="${GITHUB_REF_NAME}"
-          mkdir -p /tmp/pub && cd /tmp/pub
-
-          # The release we are checking is a DRAFT (see `release.draft` in
-          # .goreleaser.yaml), and GitHub does not resolve drafts by tag: the
-          # `releases/tags/{tag}` endpoint that `gh release download` uses
-          # returns 404 for them, because a draft has no tag association
-          # server-side until it is published. v0.1.0 was the first tag ever
-          # cut here and the first run of this job, which is where that
-          # surfaced — two deliberate decisions (draft-gate the release, verify
-          # the release is reproducible) that had never been executed together.
-          #
-          # Listing releases DOES include drafts for a caller with read access,
-          # so the asset is fetched by id. Deliberately not fixed by dropping
-          # `draft: true`, which would put the reproducibility gate ahead of the
-          # human-reads-the-notes gate by making every tag instantly installable.
-          rel=$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
-                  --jq "map(select(.tag_name == \"$TAG\")) | first")
-          test -n "$rel" && [ "$rel" != "null" ] \
-            || { echo "::error::no release found for $TAG"; exit 1; }
-
-          asset="gurdy_${TAG#v}_linux_amd64.tar.gz"
-          id=$(printf '%s' "$rel" | jq -r --arg n "$asset" \
-                 '.assets[] | select(.name == $n) | .id')
-          test -n "$id" \
-            || { echo "::error::$asset is not attached to $TAG"; exit 1; }
-
-          # Accept: octet-stream is what makes this the asset bytes rather than
-          # the JSON describing them.
-          gh api -H "Accept: application/octet-stream" \
-            "repos/$GITHUB_REPOSITORY/releases/assets/$id" > "$asset"
-          tar xzf "$asset"
+          cd /tmp/pub
+          shopt -s nullglob
+          set -- gurdy_*_linux_amd64.tar.gz
+          test $# -eq 1 \
+            || { echo "::error::expected exactly one linux_amd64 archive, got $#"; exit 1; }
+          tar xzf "$1"
 
           fail=0
           for b in gurdy-proxy gurdy-verify; do

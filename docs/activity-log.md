@@ -90,9 +90,19 @@ human reads the notes before anything is installable. `gh release download` reso
 through `repos/{owner}/{repo}/releases/tags/{tag}`, and **that endpoint does not return drafts** — a
 draft has no tag association server-side until it is published. So the reproducibility gate could
 never have run against a draft-gated release. Both halves shipped months apart, neither was wrong,
-and nothing executed them together until a tag existed. Fixed by listing releases (which *does*
-include drafts for a caller with read access) and fetching the asset by id with
-`Accept: application/octet-stream`. Deliberately **not** fixed by dropping `draft: true`, which would
+and nothing executed them together until a tag existed.
+
+**The first fix was wrong too, and its failure is the one worth keeping.** Listing releases does
+include drafts, so the job fetched the asset by id — and failed again, on `no release found`, because
+GitHub shows draft releases only to callers with **push** access and this job runs with
+`contents: read`. The available repair was `contents: write`, and taking it would have handed the
+verification job write access to the artifact it verifies. That is a strictly worse property than the
+one it buys, on a gate whose entire purpose is independent confirmation. So the bytes now come from
+the release job by workflow artifact instead: same bytes uploaded as release assets, same bytes
+`checksums.txt` was cosign-signed over, and the verifier still cannot touch what it checks.
+`if-no-files-found: error` on the upload, and an exact-one-archive assertion on the download, because
+the failure mode this repo keeps finding in its own checks is the gate that goes green having
+compared nothing. Deliberately **not** fixed at any point by dropping `draft: true`, which would
 resolve a conflict between two gates by deleting the more important one.
 
 **The reproducibility claim itself was then verified by hand, and it holds** — and by a harder test
