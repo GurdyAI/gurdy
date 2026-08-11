@@ -56,6 +56,29 @@ The hooks without the incident are two unexplained deny-lists. **Deliberately ke
 split, and worth restating here:** the free-versus-paid boundary in `spec.md` §5.8 and ADR-14. What is
 free is a user-facing fact; only the reasoning behind the pricing is private.
 
+**Same day — the tap, and the last long-lived credential.** `GurdyAI/homebrew-tap` created, public,
+with a README pushed rather than left empty: GoReleaser needs a default branch to publish
+`Casks/gurdy.rb` into, and an empty tap for an unnotarized security tool raises a question it then
+fails to answer. The README answers it — Homebrew *formulae* are Gatekeeper-exempt and casks are
+not, so the cask's `xattr` hook restores what a formula gets for free rather than waving away a
+check, and what actually attests these binaries is cosign keyless plus Rekor plus a reproducible
+rebuild, none of which depend on Apple.
+
+`HOMEBREW_TAP_TOKEN` is now the **only long-lived credential in the release path** — cosign, npm and
+PyPI all authenticate over OIDC; a git push to another repository has no equivalent. Fine-grained,
+scoped to `homebrew-tap` with `Contents: read and write` and nothing else. The classic PAT is the
+easier path (it has the checkbox list people expect) and is the wrong one: its narrowest workable
+scope is `public_repo`, which grants write to every public repo on the account — including the one
+whose workflow publishes signed binaries. Trading a hunt through a permissions accordion for that is
+a bad trade.
+
+**It cannot be verified before the first tag**, since a repository secret has no existence outside a
+run, and that is worth stating rather than quietly hoping. What makes it acceptable is a property the
+release workflow already had: GoReleaser cuts a **draft**, and `publish-npm`/`publish-pypi` are gated
+on `release: published`. A bad token therefore fails the tag with artifacts uploaded and *nothing*
+distributed — no npm packages live against a broken brew install. Fix and re-run beats untangling a
+half-published release, which is the same reason the npm platform-package publish order is fixed.
+
 ---
 
 ## 2026-08-10 — D14, part three: pruning declares itself, and only when asked
