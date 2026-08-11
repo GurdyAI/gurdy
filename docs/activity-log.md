@@ -3,7 +3,58 @@
 What actually happened, newest first. Terse. `docs/roadmap.md` tracks what's *left*;
 this tracks what's *done*, what was deliberately skipped, and why.
 
-Entries before 2026-07-25 are in `git log` — this file starts where it starts.
+Entries before 2026-07-25 were in `git log` — **and are not in this repository's**, which begins at
+a single commit (see 2026-08-11 below). They are in `GurdyAI/gurdy-private`. This file starts where
+it starts, and from the flip onward it is the *only* narrative of the build that ships with the code.
+
+---
+
+## 2026-08-11 — the repo is public, and history was the thing standing in the way
+
+Not the doc split. That landed the day before and it was correct as far as it went — but it went as
+far as the *working tree*, and a repository is not its working tree. Everything §1–2, §5.4, §5.7,
+§5.10, ADRs 4/8/10–14, §8.1, §9 and §10 ever said was still one `git show` away, across 83 commits:
+the full v0.8 and v0.7 design docs, forty-five revisions of the roadmap's commercial sequencing, and
+the v0.5 review-issues document — which is the one that actually matters, because it is where the
+business model, the stated moat, the delivery risk, the team size and what gets descoped under
+pressure were argued out.
+
+**The extraction had to come first, and that was the real finding.** `3e7fed5` *removed* the
+commercial half without relocating it. No sibling repo held it (`GurdyAI` had `gurdy` and `site`,
+both private and neither containing it) and no copy sat on disk. So after that commit the commercial
+half of this project existed nowhere but the history we were about to destroy. A scrub run first
+would have been the only irreversible mistake available here. It is now four files on
+`private/design-archive`, verbatim, each the last version before its file was removed or renamed —
+and verified rather than assumed, by diffing section headings against `spec.md`: what is missing from
+the public spec is exactly what is archived.
+
+**Orphan commit, not `git filter-repo`.** The rewrite looks like the more faithful option and it is
+the more dangerous one. Removing the two deleted design docs is a path filter; removing the roadmap's
+commercial sequencing is not — it is a content edit across 45 revisions of a file that still exists,
+which needs a blob callback per revision. And the v0.8 doc was *renamed* to `spec.md`, so filtering
+its path severs the spec's own lineage. Each of those can be got right; what none of them can do is
+fail loudly. A missed blob in a rewritten history is a leak nobody sees, and this is a repository
+whose entire argument is that evidence should be checkable rather than trusted. One commit is
+checkable: `gh api .../commits | length` returns 1, the tree is byte-identical to the old `main`, 173
+blobs, and nothing matching `private`, `design-v0` or `review-issues` is reachable.
+
+**Rename before create, for a reason worth writing down.** npm Trusted Publishing, PyPI Trusted
+Publishing and cosign's keyless identity are all bound to the literal string `GurdyAI/gurdy` plus
+`release.yml`. Publishing to any other slug silently invalidates all three — silently, because
+nothing fails until a release tries to publish. So the old repo was renamed to `GurdyAI/gurdy-private`
+(still private, all 13 branches, all 83 commits) to free the name, and the public repo took it.
+
+What did *not* survive the move, and had to be re-done rather than migrated: **private vulnerability
+reporting is a per-repository setting**, and `SECURITY.md` links to it. Re-enabled on the public repo,
+which is the only one where it means anything. Branch protection is likewise empty on the new repo.
+Both Trusted Publishing configs needed nothing, being OIDC — there is no credential to re-add, which
+is the whole argument for them.
+
+**Deliberately published:** `.claude/hooks/` and `CLAUDE.md`'s account of why they exist, including
+the subagent that ran `git checkout --` across the tree and deleted an uncommitted implementation.
+The hooks without the incident are two unexplained deny-lists. **Deliberately kept public in the
+split, and worth restating here:** the free-versus-paid boundary in `spec.md` §5.8 and ADR-14. What is
+free is a user-facing fact; only the reasoning behind the pricing is private.
 
 ---
 
