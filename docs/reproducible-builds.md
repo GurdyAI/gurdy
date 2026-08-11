@@ -66,6 +66,23 @@ We keep the stamps rather than disabling them with `-buildvcs=false`, because
 they are real provenance: they bind the binary to a commit, which is what makes
 "rebuild the verifier that produced this verdict" an executable instruction.
 
+**A `git worktree` is not a git clone for this purpose** — measured on v0.1.0,
+not assumed. A build from `git worktree add --detach <tag>` came out with *no*
+`vcs.*` stamps at all and therefore different hashes, at the identical commit
+with the identical toolchain; `cp -R` of a real clone matched the published
+binaries byte for byte. If your rebuild differs, run `go version -m` on both
+sides before suspecting the release: absent `vcs.revision` on yours is this,
+and it is the likeliest explanation by some distance.
+
+### Verified across operating systems, not just across paths
+
+`verify-reproducible` rebuilds on `ubuntu-latest`, the same OS that built the
+release, so what it proves is path- and runner-independence. v0.1.0 was
+additionally rebuilt **on macOS, cross-compiling to `linux/amd64`**, and both
+binaries matched the published ones exactly. Worth knowing that the guarantee
+survives a change of build OS, since that is the form most people reproducing
+this will actually be in.
+
 ## Which build produced an export
 
 Every ledger chain header records the build that wrote it, inside the signature:
