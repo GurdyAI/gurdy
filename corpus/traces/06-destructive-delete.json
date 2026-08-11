@@ -1,0 +1,29 @@
+{
+  "name": "destructive op: delete_file",
+  "attack": "delete a workspace file",
+  "why": "The name-prefix control, working as designed.",
+  "kind": "wire",
+  "steps": [
+    {
+      "call": {
+        "txn": "none",
+        "tool": "delete_file",
+        "args": {
+          "path": "/workspace/report.md"
+        }
+      }
+    }
+  ],
+  "expect": {
+    "records": [
+      {
+        "action": "mcp/tools_call",
+        "action_applied": "forwarded",
+        "tool": "delete_file",
+        "decision": "flag",
+        "policy": "flag-destructive-op"
+      }
+    ],
+    "upstream_calls": 1
+  }
+}

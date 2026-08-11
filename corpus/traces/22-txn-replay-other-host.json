@@ -1,0 +1,54 @@
+{
+  "name": "assertion replay from a different host",
+  "attack": "capture a live Gurdy-Txn and replay it from another machine to borrow its identity",
+  "why": "A transaction token is reusable across calls by design, so the proxy accepts it. What must survive is the SPLIT: the asserted principal is the attacker's stolen claim, the observed principal is still the host the call actually came from, and the record carries both.",
+  "kind": "wire",
+  "steps": [
+    {
+      "mint": {
+        "as": "root",
+        "agent": "orchestrator",
+        "human_actor": "alice@example.com",
+        "scope": {
+          "compartments": [
+            "*"
+          ],
+          "resource_types": [
+            "*"
+          ],
+          "actions": [
+            "*"
+          ],
+          "purpose": "*"
+        }
+      }
+    },
+    {
+      "call": {
+        "txn": "root",
+        "tool": "read_file",
+        "args": {
+          "path": "/workspace/notes.txt"
+        }
+      }
+    }
+  ],
+  "expect": {
+    "records": [
+      {
+        "action": "mcp/tools_call",
+        "action_applied": "forwarded",
+        "tool": "read_file",
+        "decision": "allow",
+        "assertion_status": "valid",
+        "asserted_principal": "orchestrator",
+        "principal_prefix": "svc:"
+      }
+    ],
+    "upstream_calls": 1
+  },
+  "known_gap": {
+    "why": "replaying a stolen transaction token is accepted \u2014 the token is bearer and reusable by design. The evidence records observed and asserted identity separately so the discrepancy is visible after the fact, but no control acts on it",
+    "closes_with": "cnf proof-of-possession on the token (\u00a75.2), and a policy family that compares asserted against observed once workload identity exists (\u00a78.2)"
+  }
+}

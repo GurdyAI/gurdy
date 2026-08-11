@@ -1,0 +1,30 @@
+{
+  "name": "egress to a model endpoint on localhost",
+  "attack": "run a relay on 127.0.0.1 and point the agent's completions at it, collecting every prompt on the way past",
+  "why": "provider() maps loopback to \"local\" and the egress control only fires on \"unlisted\". That exemption exists for dev mode, where the model endpoint legitimately is local \u2014 but in production a localhost endpoint is an attacker's relay as easily as a developer's stub, and the control cannot tell them apart.\n\nNote also what this harness cannot reach: it always points the proxy at a loopback upstream, so no trace here can exercise the genuinely-unlisted branch. That branch is covered by internal/extract tests, not by the corpus, and saying so is better than a trace that appears to cover it.",
+  "kind": "wire",
+  "steps": [
+    {
+      "call": {
+        "txn": "none",
+        "path": "/v1/chat/completions",
+        "body": "{\"model\": \"secret-model\", \"max_tokens\": 64, \"messages\": [{\"role\": \"user\", \"content\": \"exfiltrate\"}]}"
+      }
+    }
+  ],
+  "expect": {
+    "upstream_calls": 1,
+    "records": [
+      {
+        "action": "llm/completion",
+        "tool": "secret-model",
+        "decision": "allow",
+        "action_applied": "forwarded"
+      }
+    ]
+  },
+  "known_gap": {
+    "why": "model calls to a loopback endpoint are exempt from the unlisted-host control, because provider() classifies them as \"local\" for dev mode. A relay started on the same host as the agent therefore collects traffic unflagged",
+    "closes_with": "make the local exemption conditional on dev mode rather than on the host, or add an explicit allowlist of model endpoints to the agent-security pack (roadmap \u00a73.D)"
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "name": "a pooled worker does not inherit the previous task's identity",
+  "why": "The inverse of case 09, and the more dangerous half. Pool threads are reused, so an SDK that binds the context to the *worker* rather than capturing it at submit will stamp whatever it last held onto the next task's calls. Case 09 passes either way; only this one separates propagation from contamination. A lost lineage is a visible gap in the evidence, but a call recorded under an agent that did not make it is misattributed evidence, and no reader can detect it.",
+  "steps": [
+    {"mint": {"as": "alpha", "agent": "agent-alpha", "human_actor": "alice@example.com", "scope": {"compartments":["*"],"resource_types":["*"],"actions":["*"],"purpose":"*"}}},
+    {"mint": {"as": "beta", "agent": "agent-beta", "human_actor": "bob@example.com", "scope": {"compartments":["*"],"resource_types":["*"],"actions":["*"],"purpose":"*"}}},
+    {"call": {"txn": "alpha", "tool": "read_file", "args": {"path": "/workspace/a.txt"}, "in": "thread"}},
+    {"call": {"txn": "none", "tool": "read_file", "args": {"path": "/workspace/none.txt"}, "in": "thread"}},
+    {"call": {"txn": "beta", "tool": "read_file", "args": {"path": "/workspace/b.txt"}, "in": "thread"}}
+  ],
+  "expect": {
+    "upstream_calls": 3,
+    "records": [
+      {"action": "mcp/tools_call", "assertion_status": "valid", "asserted_principal": "agent-alpha",
+       "asserted_human_actor": "alice@example.com", "answered": true},
+      {"action": "mcp/tools_call", "assertion_status": "absent", "principal_tier": "attested-coarse",
+       "no_asserted_fields": true, "answered": true},
+      {"action": "mcp/tools_call", "assertion_status": "valid", "asserted_principal": "agent-beta",
+       "asserted_human_actor": "bob@example.com", "answered": true}
+    ]
+  }
+}

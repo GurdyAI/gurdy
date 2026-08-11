@@ -1,0 +1,13 @@
+{
+  "name": "txn header is hop-by-hop",
+  "why": "Wire contract: Gurdy-Txn is a live bearer credential for the whole transaction. The proxy consumes it; an upstream that receives one can mint call assertions in the agent's name.",
+  "steps": [
+    {"mint": {"as": "root", "agent": "orchestrator",
+              "scope": {"compartments": ["*"], "resource_types": ["*"], "actions": ["*"], "purpose": "*"}}},
+    {"call": {"txn": "root", "tool": "read_file", "args": {"path": "/workspace/notes.txt"}}}
+  ],
+  "expect": {
+    "records": [{"action": "mcp/tools_call", "assertion_status": "valid"}],
+    "upstream_never_saw_header": ["Gurdy-Txn"]
+  }
+}

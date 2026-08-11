@@ -1,0 +1,18 @@
+{
+  "name": "traffic no extractor claims",
+  "attack": "send a request that is not MCP and not a model call, hoping it counts as governed and passes",
+  "why": "Silence here is 'not our business', not 'approved'. The trace pins that such traffic is forwarded and produces NO decision record \u2014 so nobody can later read its absence as an allow.",
+  "kind": "wire",
+  "steps": [
+    {
+      "call": {
+        "txn": "none",
+        "body": "{\"hello\":\"world\"}"
+      }
+    }
+  ],
+  "expect": {
+    "records": [],
+    "upstream_calls": 1
+  }
+}

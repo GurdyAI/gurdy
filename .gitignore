@@ -1,0 +1,26 @@
+cover.out
+/proxy/gurdy-proxy
+/proxy/gurdy-verify
+# local ledger dirs from manual runs — they contain a signing key
+*-ledger/
+
+# Claude Code config. The hooks and agent definitions are shared project rules —
+# the hooks encode two incidents and CLAUDE.md documents them, so a clone that
+# lacked them would have the documentation without the enforcement. Only the
+# permissions allow-list is machine-specific: it is full of one host's absolute
+# paths.
+.claude/settings.local.json
+# Agent definitions are one contributor's tooling, not a project rule — unlike
+# the hooks above them, which encode two incidents this repo actually had.
+.claude/agents/
+
+# Python virtualenvs, anywhere in the tree
+.venv/
+__pycache__/
+
+# goreleaser build output
+dist/
+
+# npm packaging build output (platform binaries)
+packaging/npm/out/
+packaging/pypi/out/

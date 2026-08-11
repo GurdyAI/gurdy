@@ -1,0 +1,31 @@
+{
+  "name": "no SDK still attributes",
+  "why": "\u00a75.9: SDK absence does not blank out provenance \u2014 the proxy records an attested-coarse principal. \u00a75.5: with no valid assertion, no asserted field is written at all. This is a wire-contract fixture: it describes traffic from an agent with no SDK, so no SDK can produce it and the runner executes it directly.",
+  "steps": [
+    {
+      "call": {
+        "txn": "none",
+        "tool": "read_file",
+        "args": {
+          "path": "/workspace/notes.txt"
+        }
+      }
+    }
+  ],
+  "expect": {
+    "records": [
+      {
+        "action": "mcp/tools_call",
+        "tool": "read_file",
+        "assertion_status": "absent",
+        "principal_prefix": "svc:",
+        "no_asserted_fields": true,
+        "principal_tier": "attested-coarse",
+        "action_applied": "forwarded",
+        "answered": true
+      }
+    ],
+    "upstream_calls": 1
+  },
+  "kind": "wire"
+}

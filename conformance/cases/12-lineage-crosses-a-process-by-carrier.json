@@ -1,0 +1,15 @@
+{
+  "name": "lineage crosses a process only by an explicit carrier",
+  "why": "A subprocess shares no memory, so nothing propagates implicitly and nothing should pretend to: auto-pickling a context across a fork is the magic that fails silently. The SDK must offer a deliberate way to carry the credential and re-enter it on the other side, and this pins that it produces the same evidence as an in-process call. The matching negative — a worker given no carrier runs unenriched — is case 11's middle record.",
+  "steps": [
+    {"mint": {"as": "root", "agent": "orchestrator", "human_actor": "alice@example.com", "scope": {"compartments":["*"],"resource_types":["*"],"actions":["*"],"purpose":"*"}}},
+    {"call": {"txn": "root", "tool": "read_file", "args": {"path": "/workspace/notes.txt"}, "in": "process"}}
+  ],
+  "expect": {
+    "upstream_calls": 1,
+    "records": [
+      {"action": "mcp/tools_call", "assertion_status": "valid", "asserted_principal": "orchestrator",
+       "asserted_human_actor": "alice@example.com", "lineage": ["orchestrator"], "answered": true}
+    ]
+  }
+}

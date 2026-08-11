@@ -1,0 +1,17 @@
+{
+  "name": "lineage survives a worker thread",
+  "why": "§5.9 requires propagation into sub-agent work with no further developer code, and a worker thread is where it silently stops: a Python ContextVar is not copied into threading.Thread or ThreadPoolExecutor, and a TypeScript AsyncLocalStorage does not cross into worker_threads. An SDK that loses the binding here still forwards the call, so the traffic looks fine and the record attributes a sub-agent's action to nobody.",
+  "steps": [
+    {"mint": {"as": "root", "agent": "orchestrator", "human_actor": "alice@example.com", "scope": {"compartments":["*"],"resource_types":["*"],"actions":["*"],"purpose":"*"}}},
+    {"derive": {"from": "root", "as": "child", "agent": "fetcher", "scope": {"compartments":["*"],"resource_types":["*"],"actions":["read"],"purpose":"*"}}},
+    {"call": {"txn": "child", "tool": "read_file", "args": {"path": "/workspace/notes.txt"}, "in": "thread"}}
+  ],
+  "expect": {
+    "upstream_calls": 1,
+    "records": [
+      {"action": "mcp/tools_call", "assertion_status": "valid", "asserted_principal": "fetcher",
+       "asserted_human_actor": "alice@example.com", "lineage": ["orchestrator", "fetcher"],
+       "principal_prefix": "svc:", "answered": true}
+    ]
+  }
+}

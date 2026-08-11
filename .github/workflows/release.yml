@@ -1,0 +1,274 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  # Publishing to npm and PyPI happens when a human *publishes* the draft
+  # release, not when the tag lands. The draft exists so someone reads the notes
+  # before anyone can install it, and that gate was previously protecting only
+  # the reversible channel: a GitHub draft can be deleted without trace, npm can
+  # be unpublished for 72 hours under restrictions, and a PyPI version number is
+  # burned permanently the moment it is uploaded. The irreversible channels had
+  # no gate at all.
+  #
+  # An event gate rather than an environment protection rule on purpose: that
+  # would be a repo setting somebody has to remember to configure, and a rule
+  # enforced by discipline decays.
+  release:
+    types: [published]
+
+# Pinned, and pinned to the SAME version in both jobs. The reproducibility
+# check rebuilds with GoReleaser too, so a version skew between the release
+# build and the rebuild would produce a byte difference that looks like a
+# reproducibility failure but is really a tooling difference — the most
+# confusing possible way for this gate to go red.
+env:
+  GORELEASER_VERSION: v2.17.1
+
+# Permissions are per-job, not workflow-wide: `gate` runs the test suite and
+# needs neither write access nor an OIDC token, and a workflow-level grant would
+# hand both to every job that ever gets added here.
+permissions: {}
+
+jobs:
+  # Never publish something that has not passed the gate. A release is the one
+  # artifact people install without reading, so "CI was green on main" is not
+  # good enough — the tagged commit is what ships and the tagged commit is what
+  # gets tested.
+  gate:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: proxy/go.mod
+      - name: dependency licences
+        run: ./scripts/check-licenses.sh
+      - name: gate
+        working-directory: proxy
+        run: |
+          test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+          go vet ./...
+          go test -race ./...
+      - name: conformance + adversarial corpus
+        working-directory: proxy
+        run: |
+          go build -o /tmp/gp ./cmd/gurdy-proxy
+          go build -o /tmp/gc ./cmd/gurdy-conform
+          /tmp/gc -cases ../conformance/cases -proxy /tmp/gp
+          /tmp/gc -cases ../corpus/traces -proxy /tmp/gp
+
+  release:
+    if: github.event_name == 'push'
+    needs: gate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the release
+      id-token: write # cosign keyless signing via OIDC — no stored private key
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # GoReleaser needs full history for the changelog
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: proxy/go.mod
+      - uses: sigstore/cosign-installer@v3
+      - uses: anchore/sbom-action/download-syft@v0
+
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          version: ${{ env.GORELEASER_VERSION }}
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Publishing the Homebrew cask needs write access to a *different*
+          # repo (GurdyAI/homebrew-tap), which GITHUB_TOKEN cannot grant.
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+
+
+  # npm and PyPI both repackage the SAME binaries GoReleaser just built, so
+  # they consume dist/ as an artifact rather than rebuilding. Rebuilding would
+  # mean the binary someone installs from npm is not provably the one the
+  # release signed and the reproducibility job checked.
+  publish-npm:
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # OIDC, for both halves of what npm needs here: the trusted-publisher
+      # token exchange *and* the provenance attestation. There is no NPM_TOKEN
+      # anywhere in this job — npm verifies this workflow's GitHub identity
+      # instead, the same argument as cosign keyless and PyPI Trusted
+      # Publishing. All six packages are configured to trust
+      # `GurdyAI/gurdy` + `release.yml`, so a publish from any other workflow,
+      # repo, or fork is rejected by the registry rather than by our discipline.
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      # The exact bytes attached to the release, checksum-verified — not a
+      # rebuild, which would only be equivalent to what was signed.
+      - name: fetch the published binaries
+        run: packaging/from-release.sh "${GITHUB_REF_NAME}"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Node 24, not 22: trusted publishing needs npm >= 11.5.1 AND Node >=
+      # 22.14.0, and those are two separate floors that one version number does
+      # not satisfy. Node 22 ships npm 10.x, which has no OIDC support at all
+      # and fails as an *authentication* error — a failure that reads like a
+      # bad token and sends you looking in the wrong place entirely.
+      #
+      # No `registry-url`, deliberately. It exists to write an .npmrc holding
+      # `_authToken=${NODE_AUTH_TOKEN}`, and with the token gone that line
+      # expands to an empty credential. npm tolerates the empty value (checked:
+      # it 401s rather than erroring on the unset variable), but whether an
+      # empty `_authToken` short-circuits the OIDC exchange is exactly the kind
+      # of thing that would surface for the first time on a real release. The
+      # default registry is already registry.npmjs.org and no .npmrc exists in
+      # this repo, so the line bought nothing and could only cost.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      # Belt and braces over the bundled npm, because "Node 24 ships npm 11"
+      # does not promise 11.5.1 specifically, and the shortfall is invisible
+      # until it presents as that same misleading auth error. Pinned to the 11.x
+      # line rather than `@latest` so a future npm 12 cannot change the publish
+      # semantics of a tagged release without someone editing this file.
+      - name: npm >= 11.5.1 (trusted publishing)
+        run: |
+          npm install -g "npm@^11.5.1"
+          npm --version
+
+      # Built and tested BEFORE anything publishes, and published after — the
+      # two halves are separate steps on purpose. This job runs on
+      # `release: published`, a different workflow run from the tag push that
+      # ran `gate`, so nothing in *this* run has tested anything yet. With the
+      # SDK's test wedged in after the CLI publish, a failing SDK test would
+      # have aborted the job with five packages already live and the sixth
+      # missing — a half-published release, caused by the gate meant to prevent
+      # one. Test early, publish late.
+      - name: build and test @gurdy/sdk
+        working-directory: sdk/typescript
+        run: |
+          set -euo pipefail
+          npm ci
+          npm test
+
+      # `--provenance` stays despite npm's docs saying trusted publishing makes
+      # it automatic: publishes have been reported to fail without it. The flag
+      # is a no-op if the docs are right and load-bearing if they are not, which
+      # makes keeping it the cheap side of the bet.
+      - name: build and publish
+        run: NPM_PUBLISH=1 packaging/npm/build.sh "${GITHUB_REF_NAME}" --provenance
+
+      # `@gurdy/sdk` is the other half of §5.9 and it is a *different shape* of
+      # artifact: pure TypeScript, no binaries, so it does not consume dist/ and
+      # has no publish-order constraint against the CLI packages. It rides in
+      # this job for the OIDC identity and the Node setup, and it goes last so a
+      # failure here cannot leave the CLI's platform-package ordering half-done.
+      #
+      # The PyPI wheel already ships `sdk/python` inside the `gurdy` package
+      # (§3.3 — one package, binaries in .data/scripts). npm has no such
+      # collision to resolve, so the two names stay separate: `@gurdy/cli` is
+      # the binaries, `@gurdy/sdk` is the on-ramp.
+      #
+      # Version comes from the tag, not from the committed 0.1.0 — a release
+      # whose SDK reports a version nobody tagged cannot be traced back to a
+      # build, which is the same argument as `producer` in the chain header.
+      - name: publish @gurdy/sdk
+        working-directory: sdk/typescript
+        run: |
+          set -euo pipefail
+          npm version --no-git-tag-version --allow-same-version "${GITHUB_REF_NAME#v}"
+          npm publish --provenance
+
+  publish-pypi:
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # PyPI Trusted Publishing — see below
+    steps:
+      - uses: actions/checkout@v4
+      - name: fetch the published binaries
+        run: packaging/from-release.sh "${GITHUB_REF_NAME}"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - name: build wheels
+        run: python packaging/pypi/build_wheels.py "${GITHUB_REF_NAME}" --out packaging/pypi/out
+      # Trusted Publishing: no API token anywhere. PyPI verifies the GitHub OIDC
+      # identity of this workflow instead, which means there is no long-lived
+      # credential to leak, rotate, or be compelled to hand over — the same
+      # argument as cosign keyless signing. Configure it once at
+      # https://pypi.org/manage/project/gurdy/settings/publishing/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: packaging/pypi/out
+
+  # Prove the reproducibility claim on every release rather than asserting it.
+  # This rebuilds the same tag on a different runner, in a different directory,
+  # and fails if any byte differs from what we just published. A reproducibility
+  # claim nobody re-runs is exactly the kind of unverified assurance this
+  # product exists to argue against.
+  verify-reproducible:
+    if: github.event_name == 'push'
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: proxy/go.mod
+
+      - name: rebuild the tag in a different path
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/rebuild && cp -R . /tmp/rebuild/src
+          cd /tmp/rebuild/src
+          # Same GoReleaser version as the release build, not @latest.
+          go run "github.com/goreleaser/goreleaser/v2@${GORELEASER_VERSION}" \
+            build --clean --skip=validate
+          find dist -type f \( -name gurdy-proxy -o -name gurdy-verify \) \
+            -exec sha256sum {} \; | sed 's|dist/||' | sort > /tmp/rebuilt.txt
+          test -s /tmp/rebuilt.txt || { echo "::error::rebuild produced no binaries"; exit 1; }
+          cat /tmp/rebuilt.txt
+
+      - name: compare against the published binaries
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern "gurdy_*_linux_amd64.tar.gz" --dir /tmp/pub
+          cd /tmp/pub && for a in gurdy_*_linux_amd64.tar.gz; do tar xzf "$a"; done
+
+          fail=0
+          for b in gurdy-proxy gurdy-verify; do
+            pub=$(sha256sum "/tmp/pub/$b" | cut -d' ' -f1)
+            reb=$(awk -v b="$b" '$2 ~ ("linux_amd64.*/" b "$") {print $1}' /tmp/rebuilt.txt)
+
+            # An empty hash on either side must FAIL, never compare equal. The
+            # obvious `[ "$pub" = "$reb" ]` passes when both are empty — a gate
+            # that goes green having compared nothing, which is the exact defect
+            # class this repo keeps finding in its own checks.
+            if [ -z "$pub" ] || [ -z "$reb" ]; then
+              echo "::error::$b — missing hash (published='$pub' rebuilt='$reb'); nothing was compared"
+              fail=1; continue
+            fi
+            if [ "$pub" != "$reb" ]; then
+              echo "::error::$b is NOT reproducible: published=$pub rebuilt=$reb"
+              fail=1; continue
+            fi
+            echo "$b reproducible: $pub"
+          done
+          exit $fail

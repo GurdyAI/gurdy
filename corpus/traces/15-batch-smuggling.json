@@ -1,0 +1,32 @@
+{
+  "name": "malformed-MCP evasion: destructive call hidden in a batch",
+  "attack": "bury delete_file among benign calls in a JSON-RPC batch array",
+  "why": "Batch arrays were removed in newer MCP revisions but older clients still send them. Every element must be decided independently \u2014 one record per call, not one per request.",
+  "kind": "wire",
+  "steps": [
+    {
+      "call": {
+        "txn": "none",
+        "body": "[{\"jsonrpc\": \"2.0\", \"id\": 1, \"method\": \"tools/call\", \"params\": {\"name\": \"read_file\", \"arguments\": {\"path\": \"/workspace/a.txt\"}}}, {\"jsonrpc\": \"2.0\", \"id\": 2, \"method\": \"tools/call\", \"params\": {\"name\": \"delete_file\", \"arguments\": {\"path\": \"/workspace/b.txt\"}}}]"
+      }
+    }
+  ],
+  "expect": {
+    "records": [
+      {
+        "action": "mcp/tools_call",
+        "action_applied": "forwarded",
+        "tool": "read_file",
+        "decision": "allow"
+      },
+      {
+        "action": "mcp/tools_call",
+        "action_applied": "forwarded",
+        "tool": "delete_file",
+        "decision": "flag",
+        "policy": "flag-destructive-op"
+      }
+    ],
+    "upstream_calls": 1
+  }
+}

@@ -1,0 +1,137 @@
+{
+  "name": "orphan flooding",
+  "attack": "issue a burst of unattributed calls to bury a real one in noise and exhaust the recorder",
+  "why": "Every call must still be recorded: the ledger's queue drops under pressure and counts what it drops, so the failure mode is a counted gap rather than silence. This trace pins that a modest burst is recorded in full.",
+  "kind": "wire",
+  "steps": [
+    {
+      "call": {
+        "txn": "none",
+        "tool": "read_file",
+        "args": {
+          "path": "/workspace/f0.txt"
+        }
+      }
+    },
+    {
+      "call": {
+        "txn": "none",
+        "tool": "read_file",
+        "args": {
+          "path": "/workspace/f1.txt"
+        }
+      }
+    },
+    {
+      "call": {
+        "txn": "none",
+        "tool": "read_file",
+        "args": {
+          "path": "/workspace/f2.txt"
+        }
+      }
+    },
+    {
+      "call": {
+        "txn": "none",
+        "tool": "read_file",
+        "args": {
+          "path": "/workspace/f3.txt"
+        }
+      }
+    },
+    {
+      "call": {
+        "txn": "none",
+        "tool": "read_file",
+        "args": {
+          "path": "/workspace/f4.txt"
+        }
+      }
+    },
+    {
+      "call": {
+        "txn": "none",
+        "tool": "read_file",
+        "args": {
+          "path": "/workspace/f5.txt"
+        }
+      }
+    },
+    {
+      "call": {
+        "txn": "none",
+        "tool": "read_file",
+        "args": {
+          "path": "/workspace/f6.txt"
+        }
+      }
+    },
+    {
+      "call": {
+        "txn": "none",
+        "tool": "read_file",
+        "args": {
+          "path": "/workspace/f7.txt"
+        }
+      }
+    }
+  ],
+  "expect": {
+    "records": [
+      {
+        "action": "mcp/tools_call",
+        "action_applied": "forwarded",
+        "tool": "read_file",
+        "decision": "allow"
+      },
+      {
+        "action": "mcp/tools_call",
+        "action_applied": "forwarded",
+        "tool": "read_file",
+        "decision": "allow"
+      },
+      {
+        "action": "mcp/tools_call",
+        "action_applied": "forwarded",
+        "tool": "read_file",
+        "decision": "allow"
+      },
+      {
+        "action": "mcp/tools_call",
+        "action_applied": "forwarded",
+        "tool": "read_file",
+        "decision": "allow"
+      },
+      {
+        "action": "mcp/tools_call",
+        "action_applied": "forwarded",
+        "tool": "read_file",
+        "decision": "allow"
+      },
+      {
+        "action": "mcp/tools_call",
+        "action_applied": "forwarded",
+        "tool": "read_file",
+        "decision": "allow"
+      },
+      {
+        "action": "mcp/tools_call",
+        "action_applied": "forwarded",
+        "tool": "read_file",
+        "decision": "allow"
+      },
+      {
+        "action": "mcp/tools_call",
+        "action_applied": "forwarded",
+        "tool": "read_file",
+        "decision": "allow"
+      }
+    ],
+    "upstream_calls": 8
+  },
+  "known_gap": {
+    "why": "there is no rate control of any kind: a flood is recorded faithfully until the ledger queue overflows, after which records are dropped and merely counted. The attack does not evade evidence, it degrades it",
+    "closes_with": "queue backpressure policy and a flood control in the agent-security pack (roadmap \u00a73.C/\u00a73.D)"
+  }
+}

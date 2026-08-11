@@ -1,0 +1,38 @@
+# NOTE: this pyproject is for development and testing only — `uv sync`, pytest,
+# the conformance driver. It is NOT the release path.
+#
+# The published `gurdy` on PyPI is built by packaging/pypi/build_wheels.py,
+# which ships these same sources PLUS the Go binaries as platform wheels
+# (§3.3: "the wheel bundles the Go governance core as a platform binary"), so
+# `pipx install gurdy` yields the CLI and `pip install gurdy` yields the SDK
+# with a working dev mode. Running `uv build` here would produce a pure wheel
+# that omits the core — installable, importable, and missing the half of the
+# package §5.9's dev mode depends on.
+[project]
+name = "gurdy"
+version = "0.1.0"
+description = "Provenance enrichment for governed agent traffic — the on-ramp to gurdy-proxy."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+# No runtime dependencies, deliberately. This package is installed into someone
+# else's agent process; every dependency it adds is a version constraint on a
+# tree it does not own, and it needs nothing the standard library lacks (§5.9:
+# a thin shim over the wire contract, no governance logic).
+dependencies = []
+
+[project.optional-dependencies]
+httpx = ["httpx>=0.27"]
+
+[dependency-groups]
+dev = ["pytest>=8", "httpx>=0.27"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/gurdy"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

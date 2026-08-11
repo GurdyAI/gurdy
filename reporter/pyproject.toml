@@ -1,0 +1,29 @@
+[project]
+name = "gurdy-report"
+version = "0.1.0"
+description = "The free-tier local governance report: a Gurdy decision ledger compiled into an artifact a reviewer can read (BR-11, §5.6)."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+# No dependencies, deliberately. §5.6 requires the report path to be
+# deterministic and template-driven, and a templating engine would add a
+# dependency to do string formatting the standard library already does. Every
+# dependency here is one more thing standing between a ledger and a claim
+# about it.
+dependencies = []
+
+[project.scripts]
+gurdy-report = "gurdy_report.__main__:main"
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/gurdy_report"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,0 +1,29 @@
+{
+  "name": "destructive op: case-varied tool name",
+  "attack": "call DeleteFile instead of delete_file",
+  "why": "context.tool is lowercased before evaluation precisely so this cannot work. Proves it.",
+  "kind": "wire",
+  "steps": [
+    {
+      "call": {
+        "txn": "none",
+        "tool": "DeleteFile",
+        "args": {
+          "path": "/workspace/report.md"
+        }
+      }
+    }
+  ],
+  "expect": {
+    "records": [
+      {
+        "action": "mcp/tools_call",
+        "action_applied": "forwarded",
+        "tool": "DeleteFile",
+        "decision": "flag",
+        "policy": "flag-destructive-op"
+      }
+    ],
+    "upstream_calls": 1
+  }
+}
