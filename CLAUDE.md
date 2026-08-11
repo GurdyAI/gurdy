@@ -8,7 +8,8 @@ Gurdy is an agent-governance platform: a proxy that intercepts agent→tool traf
 against a versioned Cedar policy bundle, and writes a tamper-evident decision ledger that a third
 party can verify offline.
 
-`docs/spec.md` is the **normative spec** (public half; the commercial sections live in the private repo) — section numbers (§5.2),
+`docs/spec.md` is the **normative spec** (public half; the commercial sections live in `GurdyAI/gurdy-private`,
+branch `private/design-archive`, under `docs/private/`) — section numbers (§5.2),
 requirement IDs (FR-3, NFR-1, BR-11) and ADR numbers in code comments all point into it. Read the
 relevant section before changing behavior; the doc wins over the code. `docs/roadmap.md` sequences
 the doc (it does not amend it) and tracks known debt items D1–D8 with file locations — check it
