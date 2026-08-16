@@ -106,7 +106,23 @@ const (
 	// that runs out of fds stops governing traffic altogether (NFR-3), which
 	// is strictly worse than a re-open syscall on a cold partition.
 	maxOpenParts = 64
+	// maxParts bounds the partition *map*, which maxOpenParts does not: evicting
+	// a partition releases its file handle but keeps its chain state, so the map
+	// grew once per distinct (tenant, workload) key ever seen and never shrank
+	// (D6). Keeping that state was never necessary, only cheaper — `part` already
+	// rebuilds seq and head from the file with scanTail whenever a name is
+	// missing, which is the same path a restart takes.
+	//
+	// Well above maxOpenParts so a closed victim always exists, and high enough
+	// that a re-scan is a churn cost rather than a steady-state one.
+	defaultMaxParts = 4096
 )
+
+// maxParts is a var solely so a test can lower it: proving the bound at 4096
+// means creating 4097 real chains, and a gate slow enough to skip is a gate.
+// It must stay above maxOpenParts — below it every partition is open, none is
+// a safe victim, and the map would grow anyway.
+var maxParts = defaultMaxParts
 
 // Assertion status: whether an SDK transaction assertion accompanied the call
 // (§5.5). Distinct from PrincipalTier, which rates the proxy's own observation
@@ -930,6 +946,7 @@ func (l *Ledger) part(name string) (*partition, error) {
 	if err := l.openFile(name, p); err != nil {
 		return nil, err
 	}
+	l.forgetColdest() // bound the map, not just the fds (D6)
 	l.parts[name] = p
 	if inherited > 0 {
 		// Mark the boundary before writing anything else, so the record sits
@@ -1029,6 +1046,57 @@ func (l *Ledger) evictLRU(except string) {
 		l.countGap(vname, &l.WriteErrors, func(g *gapCounts) { g.writeErrors++ })
 		delete(l.parts, vname)
 	}
+}
+
+// forgetColdest drops the least-recently-used *closed* partition once the map
+// is full, so memory is bounded by partitions recently active rather than by
+// every (tenant, workload) key the process has ever seen (D6).
+//
+// Only `f == nil` entries are candidates, and that is the whole safety
+// argument rather than a convenience: evictLRU signs an open batch before it
+// releases a handle, so a closed partition is by construction fully signed and
+// flushed — which is why the tick and Close already skip exactly these. An
+// entry still holding a writer may have unsigned records, and forgetting it
+// would strand them outside every signature, appendable by anyone with file
+// access. That is the hazard D14's sealing-before-roll exists to prevent, and
+// it must not be reintroduced here.
+//
+// **That check is unreachable today and is kept anyway.** evictLRU picks its
+// fd victim by the same `used` clock, so the open set is always the most
+// recently used and the coldest entry is never one of them — removing the
+// check does not currently change what gets forgotten, and a mutation test
+// confirms it cannot be made to fail. It stays because it is load-bearing the
+// moment the fd policy stops being LRU, and because the failure it prevents is
+// silent: a stranded unsigned tail verifies fine right up until someone
+// appends to it.
+//
+// Forgetting costs a scanTail on revival. It is the same work a restart does,
+// on the same code path, so it is exercised constantly rather than only here.
+//
+// ponytail: one victim per insertion, which holds the map at the cap because
+// it only ever grows by one. O(len(parts)) per *new* partition, on the writer
+// goroutine and off the request path; a heap keyed by `used` if churn ever
+// makes this scan show up in a profile.
+func (l *Ledger) forgetColdest() {
+	if len(l.parts) < maxParts {
+		return
+	}
+	var vname string
+	var oldest uint64
+	for name, p := range l.parts {
+		if p.f != nil {
+			continue // still open: may hold unsigned records
+		}
+		if vname == "" || p.used < oldest {
+			vname, oldest = name, p.used
+		}
+	}
+	if vname != "" {
+		delete(l.parts, vname)
+	}
+	// No candidate means every partition is open, which maxOpenParts makes
+	// impossible while maxParts exceeds it. Growing past the cap is the right
+	// failure anyway: dropping an open partition would lose an unsigned tail.
 }
 
 // path maps a partition name to its export file. The name is a (tenant,
