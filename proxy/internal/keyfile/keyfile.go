@@ -106,6 +106,55 @@ func LoadOrCreate(path string) (*ecdsa.PrivateKey, error) {
 	return key, nil
 }
 
+// Load returns the key at path, or an error wrapping fs.ErrNotExist if there
+// is none. Rotation needs the distinction that LoadOrCreate deliberately hides:
+// a missing *previous* key is the ordinary state of a deployment that has never
+// rotated, not something to generate on the spot. Generating one there would
+// publish a key that has signed nothing and invite a verifier to trust it.
+func Load(path string) (*ecdsa.PrivateKey, error) { return load(path) }
+
+// Replace writes key to path atomically, overwriting whatever is there.
+//
+// The opposite of LoadOrCreate's contract, and deliberately a separate
+// function rather than a flag on it. LoadOrCreate links so that two racing
+// processes converge on one key; rotation is the one operation that must
+// *displace* the existing key, so it renames — which clobbers by design.
+//
+// Safe because rotation has a single writer: the admin API and the rotation
+// timer both go through the same TIS, under its lock. If a second writer ever
+// appears, this becomes the last-write-wins hazard LoadOrCreate exists to
+// avoid, and the fix is a lock file, not a retry.
+func Replace(path string, key *ecdsa.PrivateKey) error {
+	der, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".key-*.tmp") // 0600 by definition
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.Write(pem.EncodeToMemory(
+		&pem.Block{Type: "EC PRIVATE KEY", Bytes: der})); err != nil {
+		tmp.Close()
+		return err
+	}
+	// Sync before the rename: a key that is visible at its final name but not
+	// yet on disk is the torn-read hazard LoadOrCreate documents, moved one
+	// step later. A crash here must leave either the old key or the new one.
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), path)
+}
+
 func load(path string) (*ecdsa.PrivateKey, error) {
 	pemBytes, err := os.ReadFile(path)
 	if err != nil {

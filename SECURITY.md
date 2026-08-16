@@ -110,6 +110,15 @@ them; do tell us if you find something *worse* than what is written down:
   rather than silent; and it cannot rewrite or shorten a segment, because that
   would mean re-hashing a chain. An attacker who prunes leaves a signed
   admission that they did.
+  **`POST /keys/rotate` is on the same surface and is the mildest of the three.**
+  It creates a key rather than destroying anything, and the displaced key keeps
+  verifying for a full interval, so a single call invalidates nothing. Called
+  *twice* it retires a key while tokens signed by it are still inside their TTL,
+  and those assertions are then recorded `assertion_status=invalid` — evidence
+  degraded to the unenriched path, not traffic stopped (NFR-3). That is strictly
+  less than the same attacker could achieve by rolling back the policy bundle,
+  which is why it does not change the tier of this row. `GET /jwks` publishes
+  public keys only and is safe to expose.
 - **Mint is unauthenticated** on the local Unix socket, deliberately. What it
   issues is an *asserted* claim that policy sees only as reserved context; the
   socket's owner-only mode is the control, so "who may mint" is "who may act as

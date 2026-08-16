@@ -153,3 +153,39 @@ func TestAutoMintConcurrentSinglePrincipal(t *testing.T) {
 		}
 	}
 }
+
+// A rotation must invalidate cached auto-minted tokens (NFR-5; the ceiling D12
+// named). They are still *valid* right after a rotation — the displaced key
+// verifies them for a full interval — so nothing fails today, which is exactly
+// why an expiry-only cache would hold them until the following rotation
+// retired their key and every one of them started failing at once.
+func TestAutoMintDropsCacheAfterRotation(t *testing.T) {
+	h := newHarness(t)
+	g := newGateway(h.store, h.tis, h.led, "test", slogTo(&syncBuffer{}))
+
+	first := g.autoMint("host:127.0.0.1")
+	if err := h.tis.Rotate(); err != nil {
+		t.Fatal(err)
+	}
+	second := g.autoMint("host:127.0.0.1")
+	if second == first {
+		t.Fatal("the cached token survived a key rotation")
+	}
+	// The replacement is signed by the new key, not merely different.
+	if _, err := h.tis.VerifyTxn(second); err != nil {
+		t.Fatalf("post-rotation token does not verify: %v", err)
+	}
+	// And a second rotation retires the key `first` was signed under, which is
+	// the moment an uninvalidated cache would have started handing out tokens
+	// that no longer verify.
+	if err := h.tis.Rotate(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.tis.VerifyTxn(first); err == nil {
+		t.Fatal("test is not exercising retirement: the original token still verifies")
+	}
+	third := g.autoMint("host:127.0.0.1")
+	if _, err := h.tis.VerifyTxn(third); err != nil {
+		t.Errorf("cache handed back a token signed by a retired key: %v", err)
+	}
+}
