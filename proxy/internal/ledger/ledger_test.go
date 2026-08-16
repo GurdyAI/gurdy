@@ -119,6 +119,116 @@ func TestPartitionEvictionResumesChain(t *testing.T) {
 	}
 }
 
+// The partition *map* is bounded, not just the fd budget (D6). Eviction there
+// only released the handle and kept the chain state, so the map grew once per
+// (tenant, workload) key ever seen and never shrank.
+//
+// The bound is the cheap half. What this actually has to prove is that a
+// partition dropped from memory and later written to again continues its own
+// chain — forgetting rebuilds seq and head with scanTail, and getting that
+// wrong would splice or fork a chain rather than fail loudly.
+func TestPartitionMapIsBounded(t *testing.T) {
+	defer func(old int) { maxParts = old }(maxParts)
+	maxParts = maxOpenParts + 8 // must exceed the fd budget or nothing is ever closed
+
+	dir := t.TempDir()
+	l, err := Open(dir, dir+".key.pem", Identity{Tenant: "acme", Instance: "i1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := func() Record {
+		return Record{TS: "2026-08-15T00:00:00Z", Tool: "read_file",
+			Action: "mcp/tools_call", Decision: "allow", BundleVer: "v0"}
+	}
+	total := maxParts * 2 // twice the cap, so w0 is long forgotten rather than merely closed
+	for i := range total {
+		l.Append(fmt.Sprintf("local/w%d", i), rec())
+	}
+	l.Append("local/w0", rec())
+	if err := l.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := l.Dropped.Load(); got != 0 {
+		t.Fatalf("dropped %d records under churn", got)
+	}
+	if len(l.parts) > maxParts {
+		t.Fatalf("map holds %d partitions, cap is %d — the bound does nothing", len(l.parts), maxParts)
+	}
+	if l.open > maxOpenParts {
+		t.Fatalf("%d open handles exceeds budget %d", l.open, maxOpenParts)
+	}
+
+	// What survives must be the *recently used*, not an arbitrary subset. A
+	// bound alone is satisfied by forgetting whatever was touched last, which
+	// stays bounded and thrashes: every new partition immediately re-scanned.
+	// Chains verify either way, so nothing else here would notice.
+	for _, name := range []string{
+		"local/w0",                        // revived last of all
+		fmt.Sprintf("local/w%d", total-1), // written last in the loop
+	} {
+		if _, ok := l.parts[name]; !ok {
+			t.Errorf("%s was forgotten though it is among the most recently used — eviction is not LRU", name)
+		}
+	}
+	// The above two are both still *open*, so no eviction policy would drop
+	// them and they cannot tell one policy from another. w1 is the case that
+	// can: written once at the very start, never revived, closed long ago. LRU
+	// must have forgotten it; a policy that evicts the newest closed partition
+	// instead keeps precisely the oldest ones and would still pass every other
+	// assertion here, because chains verify either way.
+	if _, ok := l.parts["local/w1"]; ok {
+		t.Errorf("local/w1 survived %d newer partitions — eviction is keeping the coldest, not the hottest", total-2)
+	}
+
+	// w0 was written, forgotten, and written again: one unbroken chain.
+	res, err := VerifyFile(l.path("local/w0"), nil)
+	if err != nil {
+		t.Fatalf("chain broken across being forgotten: %v", err)
+	}
+	if res.Decisions != 2 {
+		t.Fatalf("want 2 decisions in the revived chain, got %+v", res)
+	}
+
+	// And it must not have manufactured a crash signal. `resumed` means the
+	// writer inherited an *unsigned* tail from a previous run, which is what a
+	// crash leaves. A partition we closed deliberately was signed before its
+	// handle went, so reviving it has nothing to inherit — and a reader who
+	// finds `resumed` here would be told this process died when it did not.
+	if n := countReason(t, l.path("local/w0"), ReasonResumed); n != 0 {
+		t.Fatalf("%d 'resumed' records: forgetting a cleanly closed partition invented a crash", n)
+	}
+
+	files, _ := filepath.Glob(filepath.Join(dir, "*.jsonl"))
+	files = slices.DeleteFunc(files, func(f string) bool {
+		return strings.HasPrefix(filepath.Base(f), ProxyPartition)
+	})
+	if len(files) != total {
+		t.Fatalf("want %d partition files, got %d", total, len(files))
+	}
+	for _, f := range files {
+		if _, err := VerifyFile(f, nil); err != nil {
+			t.Fatalf("partition %s does not verify: %v", f, err)
+		}
+	}
+}
+
+func countReason(t *testing.T, path, reason string) int {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
+		var r Record
+		if json.Unmarshal([]byte(line), &r) == nil && r.Reason == reason {
+			n++
+		}
+	}
+	return n
+}
+
 func TestWriteVerifyRoundTrip(t *testing.T) {
 	path := writeN(t, t.TempDir(), 100)
 	res, err := VerifyFile(path, nil)

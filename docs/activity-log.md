@@ -9,6 +9,46 @@ it starts, and from the flip onward it is the *only* narrative of the build that
 
 ---
 
+## 2026-08-15 — D6 closed: the fd budget was never the memory bound
+
+`ledger.parts` looked solved. D3 added `maxOpenParts` with LRU eviction, and eviction is the word
+that did the damage: it releases the *file handle* and deliberately **keeps the chain state**, so the
+map still grew once per (tenant, workload) key ever seen and never shrank. A cap that reads like a
+bound and bounds something else is worse than no cap, because nobody looks twice.
+
+Keeping that state was never necessary, only cheaper. `part()` already rebuilds seq and head from the
+file with `scanTail` whenever a name is missing — the identical path a restart takes, exercised on
+every start rather than only here. So forgetting a partition costs one re-scan on revival and nothing
+else.
+
+`maxParts = 4096`, and on insertion the coldest **closed** partition is dropped. Closed is the entire
+safety argument: `evictLRU` signs an open batch before it releases a handle, so `f == nil` implies
+fully signed and flushed — an invariant the tick and `Close` were *already* relying on, both skipping
+exactly those entries with the comment "evicted: fully signed and already flushed". Reusing an
+invariant the code already depends on beat inventing a second one.
+
+**The guard against forgetting an open partition is unreachable, and it stays.** The mutation test
+proves it: remove the check and nothing fails, because fd eviction keys on the same `used` clock, so
+the open set is always the most recently used and the coldest entry is never open. It is kept because
+it becomes load-bearing the moment the fd policy stops being LRU, and because the failure mode is
+silent — a stranded unsigned tail verifies fine right up until someone appends to it. Recorded here
+and in the code rather than deleted or quietly claimed as tested.
+
+**Two of three mutations initially survived, and the second took two attempts.** Inverting the LRU —
+forget the *newest* closed partition, which stays bounded and thrashes — passed everything. The first
+repair asserted that the two most recently used partitions were still present, which also passed:
+both were still *open*, and no policy forgets an open partition, so they cannot tell two policies
+apart. The case that can is `local/w1` — written once at the start, never revived, closed long ago.
+LRU must have forgotten it; the inverted policy keeps precisely the oldest and nothing else in the
+test would notice, because chains verify under either. An assertion that cannot fail under the
+mutation is not testing the property, it is testing that the code runs.
+
+One thing worth flagging for later: `maxParts` is a `var` rather than a const purely so the test can
+lower it. Proving a 4096 bound means creating 4097 real chains, and a gate slow enough to be skipped
+is not a gate.
+
+---
+
 ## 2026-08-15 — D12: the common path stops verifying a token it minted itself
 
 `autoMint` sits on every call that arrives without a `Gurdy-Txn` — the no-SDK path, which is the
