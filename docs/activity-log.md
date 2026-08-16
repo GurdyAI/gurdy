@@ -9,6 +9,59 @@ it starts, and from the flip onward it is the *only* narrative of the build that
 
 ---
 
+## 2026-08-15 — D12: the common path stops verifying a token it minted itself
+
+`autoMint` sits on every call that arrives without a `Gurdy-Txn` — the no-SDK path, which is the
+default the product's "SDK absence does not blank out provenance" promise creates. It took a
+process-wide exclusive lock and performed an ES256 verify of the cached token while holding it, so
+every concurrent request queued behind one signature check.
+
+**The verify was proving nothing.** We minted that token, it never left memory, and no third party
+can touch it — so the only claim `VerifyTxn` could refute is expiry, and expiry is a value we
+already had at mint time. It is now stored beside the token and compared against a clock under a
+read lock.
+
+**Measured A/B, one machine, one session, three runs each**, rather than quoting the old figure from
+the roadmap:
+
+| parallel | before | after |
+|---|---|---|
+| no-SDK path | 65,018 ns/op · 407 allocs | **18,345 ns/op · 332 allocs** — 3.55× |
+| SDK path (control) | 23,973 ns/op | 23,974 ns/op — unmoved |
+
+The control is the point. `BenchmarkDecideCallParallelWithTxn` never touches `autoMint`, so its
+number not moving is what makes the other one attributable to the change instead of to the machine —
+the same discipline `gurdy-bench` applies when it refuses to subtract percentiles.
+
+**The renewal margin is about evidence, not speed.** A cached token handed out microseconds before
+it expires makes `DeriveCall` fail, and §5.5 says that call is then recorded with empty txn fields
+plus an identity gap. So the cached expiry is held a minute early: the failure it prevents is not a
+slow request, it is a degraded record, and it would have been a race nobody could reproduce on
+demand.
+
+**Half of D6 fell out of it for three lines.** Having an expiry gave the map a notion of a dead
+entry, and minting — once per principal per ~14 minutes — is the one place an O(n) sweep costs
+nothing. `autoTxn` is now bounded by principals currently active rather than by every client IP ever
+seen. `ledger.parts` still wants its own fix; the two stopped being one change.
+
+**The SDK path is now the slower one, and must stay that way.** It still runs a full `VerifyTxn` per
+call. That is not an oversight to optimise next: a supplied token is the governed party's claim,
+presented on every request, and caching a verification result for it would turn one valid
+presentation into a standing pass — `conformance/cases/05` is exactly that attack. Both benchmarks
+now carry that reasoning, because the tempting next step is to copy this speedup across and it is
+the one place it must not go.
+
+**Two of the four mutation checks failed to fail, and fixing them was the useful part.** The
+concurrency test released 64 goroutines at one principal and asserted they converged; removing the
+re-check under the write lock did not break it, because the first goroutine finished minting before
+the others were scheduled and they all took the fast path — agreeing for the wrong reason. It now
+runs 64 rounds against a fresh principal each, and the mutation dies on every run. The other was a
+bad mutation rather than a weak test: disabling the fast path still returned the cached token via
+the slow path's re-check, so the cache *write* had to be the thing removed. A mutation that leaves
+the property intact tests the mutation, not the code.
+
+---
+
 ## 2026-08-11 — the repo is public, and history was the thing standing in the way
 
 Not the doc split. That landed the day before and it was correct as far as it went — but it went as
