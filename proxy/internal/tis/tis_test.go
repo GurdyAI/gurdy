@@ -198,7 +198,7 @@ func TestExpiredTxnRejected(t *testing.T) {
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(-time.Hour)),
 		},
 	}
-	tok, err := jwt.NewWithClaims(jwt.SigningMethodES256, expired).SignedString(ts.key)
+	tok, err := ts.sign(expired) // the real signing path, kid and all
 	if err != nil {
 		t.Fatal(err)
 	}

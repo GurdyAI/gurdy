@@ -114,7 +114,7 @@ func TestDecisionServiceTimeDistribution(t *testing.T) {
 func TestLatencyEndpointReportsStagesAndItsOwnLimits(t *testing.T) {
 	clock.Reset()
 	h := newHarness(t)
-	admin := httptest.NewServer(adminMux(h.store, h.led, ""))
+	admin := httptest.NewServer(adminMux(h.store, h.led, h.tis, ""))
 	defer admin.Close()
 
 	resp, err := http.Post(h.proxy.URL, "application/json", strings.NewReader(credReadCall))

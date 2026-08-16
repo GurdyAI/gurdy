@@ -4,14 +4,13 @@
 package tis
 
 import (
-	"crypto/ecdsa"
 	"errors"
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
-	"github.com/GurdyAI/gurdy/proxy/internal/keyfile"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/oklog/ulid/v2"
 )
@@ -51,10 +50,12 @@ type CallClaims struct {
 
 // TIS mints and validates credentials for one deployment.
 type TIS struct {
-	key *ecdsa.PrivateKey
-	aud string // audience for call assertions (cross-replica/restart binding)
+	aud     string // audience for call assertions (cross-replica/restart binding)
+	keyPath string // "" for an in-memory keyring (tests); rotation then persists nothing
+	keyGen  atomic.Uint64
 
 	mu         sync.Mutex
+	ring       *keyring             // current + previous signing keys (NFR-5 2-key overlap)
 	replay     map[string]time.Time // jti -> expiry; same-instance replay defense
 	sinceSweep int
 }
@@ -71,14 +72,15 @@ type TIS struct {
 // to carry the instance or the replay defense goes with it. Txn tokens carry
 // no audience and still verify deployment-wide, which is the point of D2.
 func New(deployID, keyPath string) (*TIS, error) {
-	key, err := keyfile.LoadOrCreate(keyPath)
+	ring, err := loadKeyring(keyPath)
 	if err != nil {
 		return nil, err
 	}
 	return &TIS{
-		key:    key,
-		aud:    deployID + "#" + ulid.Make().String(),
-		replay: map[string]time.Time{},
+		ring:    ring,
+		keyPath: keyPath,
+		aud:     deployID + "#" + ulid.Make().String(),
+		replay:  map[string]time.Time{},
 	}, nil
 }
 
@@ -116,7 +118,7 @@ func (t *TIS) MintTxn(agent, humanActor string, scope Scope, polVer string, ttl 
 			ExpiresAt: jwt.NewNumericDate(now.Add(ttl)),
 		},
 	}
-	return jwt.NewWithClaims(jwt.SigningMethodES256, claims).SignedString(t.key)
+	return t.sign(claims)
 }
 
 // DeriveChildTxn mints a sub-agent transaction from a live parent token.
@@ -148,7 +150,7 @@ func (t *TIS) DeriveChildTxn(parentToken, childAgent string, childScope Scope) (
 			ExpiresAt: parent.ExpiresAt, // child never outlives parent
 		},
 	}
-	return jwt.NewWithClaims(jwt.SigningMethodES256, claims).SignedString(t.key)
+	return t.sign(claims)
 }
 
 // DeriveCall derives a single-use per-call assertion from a live txn token (FR-3).
@@ -176,7 +178,7 @@ func (t *TIS) DeriveCall(txnToken, tool string) (string, error) {
 			ExpiresAt: jwt.NewNumericDate(exp),
 		},
 	}
-	return jwt.NewWithClaims(jwt.SigningMethodES256, claims).SignedString(t.key)
+	return t.sign(claims)
 }
 
 // VerifyTxn validates signature and expiry of a transaction token.
@@ -220,9 +222,32 @@ func (t *TIS) VerifyCall(token string) (*CallClaims, error) {
 	return &claims, nil
 }
 
+// parse selects the verifying key by the token's `kid` (NFR-5: a signature
+// that cannot say which key made it makes rotation unbuildable — §5.5 landed
+// the same field on the ledger for this reason).
+//
+// A token with no kid is tried against both keys rather than refused. It is
+// not a weakening: an attacker gains nothing by omitting the hint, because the
+// signature still has to be one of ours. What it buys is the upgrade — tokens
+// minted by a pre-rotation build stay verifiable for their remaining life
+// (≤MaxTxnTTL), instead of a fleet-wide run of `invalid` assertions after a
+// deploy. NFR-3 means those would degrade the evidence silently rather than
+// break traffic, which is the worse failure of the two.
 func (t *TIS) parse(token string, claims jwt.Claims) error {
 	_, err := jwt.ParseWithClaims(token, claims,
-		func(*jwt.Token) (any, error) { return &t.key.PublicKey, nil },
+		func(tok *jwt.Token) (any, error) {
+			t.mu.Lock()
+			defer t.mu.Unlock()
+			kid, _ := tok.Header["kid"].(string)
+			if kid == "" {
+				return t.ring.candidates(), nil
+			}
+			pub, ok := t.ring.byKid(kid)
+			if !ok {
+				return nil, fmt.Errorf("tis: unknown key %q", kid)
+			}
+			return pub, nil
+		},
 		jwt.WithValidMethods([]string{"ES256"}),
 		jwt.WithExpirationRequired(),
 	)

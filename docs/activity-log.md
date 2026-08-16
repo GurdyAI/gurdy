@@ -9,6 +9,72 @@ it starts, and from the flip onward it is the *only* narrative of the build that
 
 ---
 
+## 2026-08-16 — the deployment keyring: two keys, one interval, and a scope split
+
+§5.2's rotation line and §5.5's `kid` were written for each other — the ledger field landed early
+in v0.8.5 with "the keyring and the multi-key verifier land with rotation" attached. This is the
+keyring half.
+
+Sign with current, verify with either, `kid` in the JWT header choosing which. `KeyID` is the
+*identical* 8-byte SHA-256-of-PKIX construction the ledger already stamps, reused rather than
+reinvented: a second key-naming scheme would re-label keys that existing evidence names, which is a
+migration wearing a rename's clothes.
+
+**The overlap is one full interval, which is what makes "2-key" literal.** The previous key retires
+when the next rotation displaces it — not on a second timer. Two independent clocks deciding when a
+key dies is precisely how a deployment ends up verifying a token against a key it has already
+forgotten, and NFR-3 makes that failure silent: the assertion is recorded `invalid`, which looks
+exactly like a forgery. `TestOverlapOutlivesToken` pins the relationship between the two constants,
+because the window has to exceed `MaxTxnTTL` or a token can be *born doomed* — valid when issued,
+unverifiable before its own expiry.
+
+**Both keys persist.** A restart inside the overlap that forgot the previous key fails every token
+minted before the rotation: D2's hazard, one key over. The rename ordering is chosen for what a
+crash leaves — new key written to a temp file first, then current renamed to `.prev`, then the new
+one renamed into place. A crash between the renames leaves *no* current key, and that is the benign
+outcome: the next start generates a fresh one while `.prev` still holds the key every outstanding
+token was signed with. The other ordering loses the old key, which fails exactly those tokens.
+
+**A kid-less token is tried against both keys rather than refused**, and that is not a weakening —
+an attacker gains nothing by omitting a hint when the signature still has to be ours. What it buys
+is the upgrade: tokens from a pre-rotation build stay verifiable for their remaining ≤4h instead of
+producing a fleet-wide run of `invalid` assertions after a deploy. An *unknown* kid is refused,
+though, because that is a proxy pointed at the wrong state directory and it should fail visibly.
+
+**Timer plus endpoint, and the precedent that does not apply.** Rotation is automatic — a key that
+rotates when an operator remembers is not the ≤24h guarantee NFR-5 states. The retention pruner is
+manual on purpose, and it was worth stating why that reasoning stops here: pruning destroys
+evidence, rotating destroys nothing, since the displaced key stays in the keyring and in JWKS for a
+full interval. `POST /keys/rotate` exists for the two cases a schedule cannot serve — suspected
+compromise, where waiting a day is the whole problem, and §8.3's rotation-under-live-traffic drill,
+which has to make the event happen on demand. The timer ticks every minute rather than sleeping 24h,
+so a suspended process resumes to a rotation that is due instead of a timer with 20 hours left.
+
+**D12's ceiling closed on schedule.** Its `ponytail:` comment named exactly this: cached auto-minted
+tokens understand expiry and nothing else, so a rotated key would leave them valid-then-suddenly-not.
+They now carry the key generation. The subtlety is *when* it bites — a rotation leaves those tokens
+perfectly valid, because the displaced key still verifies them; they would fail at the *following*
+rotation, when that key retires while the token is still inside its own TTL. The test therefore
+rotates twice, and asserts the original token has genuinely stopped verifying before checking the
+cache, so it cannot pass by testing nothing.
+
+**Scope was split rather than stretched.** The ledger signing key is a different problem that shares
+a word: `ledger.Open` refuses to resume a chain under a different key, the verifier rejects a `kid`
+change within a file, and both are deliberate — so rotating it means sealing and rolling every open
+segment and then teaching `gurdy-verify` to walk across a key change and accept a keyset instead of
+one `-pubkey`. That last part changes what a third party must be handed, which is the product's
+central promise, so it is its own chunk and is named as open rather than quietly implied by "rotation
+is done".
+
+**One mutation needed rebuilding to be a gate at all.** Replacing `FillBytes` with `Bytes()` in the
+JWK encoder — which trims a leading zero and publishes a 31-byte coordinate strict consumers reject
+— survived twenty runs, because a P-256 coordinate is short only about once in 256 keys and random
+generation catches it a quarter of the time at best. The test now *searches* for such a key (a few
+milliseconds) and asserts the padding directly. A probabilistic gate on a 1-in-256 defect is not a
+gate; it is a coin flip that usually says what you wanted to hear.
+
+---
+
 ## 2026-08-15 — D6 closed: the fd budget was never the memory bound
 
 `ledger.parts` looked solved. D3 added `maxOpenParts` with LRU eviction, and eviction is the word

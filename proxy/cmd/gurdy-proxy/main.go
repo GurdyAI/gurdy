@@ -195,7 +195,38 @@ func main() {
 		}
 	}()
 
-	admin := &http.Server{Addr: *adminAddr, Handler: adminMux(store, led, *policyFile)}
+	// Deployment key rotation on a timer (NFR-5, ≤24h). A key that rotates only
+	// when an operator remembers is not the guarantee the requirement states,
+	// and unlike retention pruning — which is manual on purpose, because it
+	// destroys evidence — rotating destroys nothing: the displaced key stays in
+	// the keyring and in JWKS for a full interval, so nothing outstanding is
+	// invalidated. The precedent does not carry over, and the reason it does
+	// not is the difference between the two operations.
+	//
+	// Checked on a short tick rather than slept for the full interval, so a
+	// process that is suspended or a laptop that sleeps resumes to a rotation
+	// that is due rather than to a timer with 20 hours still on it.
+	rotateTick := time.NewTicker(time.Minute)
+	defer rotateTick.Stop()
+	go func() {
+		for range rotateTick.C {
+			if !identity.RotateDue(time.Now()) {
+				continue
+			}
+			if err := identity.Rotate(); err != nil {
+				// Never fatal. The current key keeps working and the next tick
+				// tries again; a proxy that exits because it could not rotate
+				// stops governing traffic, which NFR-3 rates worse than an
+				// overdue key.
+				log.Printf("key rotation failed, still signing with kid=%s: %v", identity.CurrentKid(), err)
+				continue
+			}
+			log.Printf("gurdy-proxy: deployment key rotated on schedule, now signing with kid=%s",
+				identity.CurrentKid())
+		}
+	}()
+
+	admin := &http.Server{Addr: *adminAddr, Handler: adminMux(store, led, identity, *policyFile)}
 	go func() {
 		if err := admin.ListenAndServe(); err != http.ErrServerClosed {
 			log.Fatalf("admin: %v", err)
@@ -275,7 +306,7 @@ func reload(store *policy.Store, path string) (*policy.Evaluator, error) {
 
 // adminMux is the localhost admin API (§5.1; HTTP+JSON rather than gRPC —
 // boring wins for a two-person team, revisit if a partner integration needs it).
-func adminMux(store *policy.Store, led *ledger.Ledger, policyPath string) http.Handler {
+func adminMux(store *policy.Store, led *ledger.Ledger, identity *tis.TIS, policyPath string) http.Handler {
 	mux := http.NewServeMux()
 	writeJSON := func(w http.ResponseWriter, status int, v any) {
 		w.Header().Set("Content-Type", "application/json")
@@ -369,6 +400,41 @@ func adminMux(store *policy.Store, led *ledger.Ledger, policyPath string) http.H
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"keep": keep, "pruned": removed})
 	})
+	// GET /jwks — the public half of the deployment keyring (§5.2: "JWKS
+	// served on admin API for third-party verification"), current key first.
+	//
+	// Public keys only, and the one endpoint here that gives away nothing: the
+	// rest of this API can disarm the proxy, so it is worth being explicit that
+	// this one is safe by construction rather than by the localhost bind. It is
+	// also the only route a third party has any reason to reach, which is the
+	// argument for moving it off the admin port if the threat model ever
+	// tightens (§7's admin-disarm row).
+	//
+	// Both keys appear throughout the overlap window. A verifier holding a
+	// token signed a minute before a rotation must still find its key — a
+	// keyset that dropped a key the instant it stopped signing would make every
+	// in-flight assertion unverifiable, which is the failure rotation exists to
+	// avoid rather than cause.
+	mux.HandleFunc("GET /jwks", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{"keys": identity.JWKS()})
+	})
+	// POST /keys/rotate — force a rotation now. The timer already keeps the
+	// deployment inside NFR-5's ≤24h; this is for the two cases a schedule
+	// cannot serve: a suspected key compromise, where waiting up to a day is
+	// the whole problem, and §8.3's rotation-under-live-traffic drill, which
+	// has to be able to make the event happen on demand.
+	//
+	// Rotating costs nothing outstanding: the displaced key stays in the
+	// keyring and in JWKS for a full interval, so every token already minted
+	// keeps verifying for its whole life.
+	mux.HandleFunc("POST /keys/rotate", func(w http.ResponseWriter, r *http.Request) {
+		if err := identity.Rotate(); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
+		}
+		log.Printf("gurdy-proxy: deployment key rotated, now signing with kid=%s", identity.CurrentKid())
+		writeJSON(w, http.StatusOK, map[string]any{"kid": identity.CurrentKid(), "keys": identity.JWKS()})
+	})
 	mux.HandleFunc("POST /policy/rollback", func(w http.ResponseWriter, r *http.Request) {
 		if _, err := store.Rollback(); err != nil {
 			writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error()})
@@ -439,6 +505,7 @@ type gateway struct {
 type autoTok struct {
 	tok string
 	exp time.Time
+	gen uint64 // TIS key generation this was signed under (NFR-5)
 }
 
 // autoRenew is how far before real expiry a cached token stops being handed
@@ -1000,10 +1067,22 @@ func coarsePrincipal(r *http.Request) string {
 func (g *gateway) autoMint(coarse string) string {
 	now := time.Now()
 
+	// The key generation is part of freshness, not just the clock. A rotation
+	// leaves cached tokens *valid* — the displaced key still verifies them for
+	// a full interval — so nothing breaks today; they would fail at the
+	// following rotation, when that key is retired while the token is still
+	// inside its own TTL. An expiry-only cache cannot see that coming, which
+	// is the ceiling D12 named in its ponytail comment, closed here.
+	//
+	// Comparing per entry rather than flushing the map on rotation: a flush
+	// needs the write lock and a hook from the TIS, this needs one atomic load
+	// on the read path, and stale entries are replaced when their principal is
+	// next seen and swept when it is not.
+	gen := g.tis.KeyGen()
 	g.mu.RLock()
 	ent, ok := g.autoTxn[coarse]
 	g.mu.RUnlock()
-	if ok && now.Before(ent.exp) {
+	if ok && ent.gen == gen && now.Before(ent.exp) {
 		return ent.tok
 	}
 
@@ -1012,7 +1091,7 @@ func (g *gateway) autoMint(coarse string) string {
 	// Re-check under the write lock: several goroutines can miss the fast path
 	// on the same principal at once, and without this they would each mint,
 	// each overwrite, and hand out tokens the others had already replaced.
-	if ent, ok := g.autoTxn[coarse]; ok && now.Before(ent.exp) {
+	if ent, ok := g.autoTxn[coarse]; ok && ent.gen == gen && now.Before(ent.exp) {
 		return ent.tok
 	}
 	// Minting is rare — once per principal per (TTL - autoRenew) — so this is
@@ -1038,6 +1117,6 @@ func (g *gateway) autoMint(coarse string) string {
 	if err != nil {
 		return "" // freshly minted and unverifiable; do not cache it
 	}
-	g.autoTxn[coarse] = autoTok{tok: tok, exp: claims.ExpiresAt.Time.Add(-autoRenew)}
+	g.autoTxn[coarse] = autoTok{tok: tok, exp: claims.ExpiresAt.Time.Add(-autoRenew), gen: gen}
 	return tok
 }

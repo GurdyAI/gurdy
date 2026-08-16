@@ -599,7 +599,7 @@ func TestAdminReloadAndRollback(t *testing.T) {
 	h := newHarness(t)
 	policyPath := filepath.Join(t.TempDir(), "local.cedar")
 	os.WriteFile(policyPath, []byte(`@id("v2") permit (principal, action, resource);`), 0o644)
-	admin := httptest.NewServer(adminMux(h.store, h.led, policyPath))
+	admin := httptest.NewServer(adminMux(h.store, h.led, h.tis, policyPath))
 	defer admin.Close()
 
 	post := func(path string) (int, string) {
@@ -640,7 +640,7 @@ func TestAdminReloadAndRollback(t *testing.T) {
 // rebinding); plain CLI requests must.
 func TestAdminRejectsCrossOrigin(t *testing.T) {
 	h := newHarness(t)
-	admin := httptest.NewServer(adminMux(h.store, h.led, ""))
+	admin := httptest.NewServer(adminMux(h.store, h.led, h.tis, ""))
 	defer admin.Close()
 
 	req, _ := http.NewRequest(http.MethodPost, admin.URL+"/policy/rollback", nil)
@@ -1011,7 +1011,7 @@ forbid (principal, action, resource) when { context has resource_path && context
 // less than it saw.
 func TestHealthReportsCoverageGaps(t *testing.T) {
 	h := newHarness(t)
-	admin := httptest.NewServer(adminMux(h.store, h.led, ""))
+	admin := httptest.NewServer(adminMux(h.store, h.led, h.tis, ""))
 	defer admin.Close()
 
 	health := func() map[string]any {
@@ -1162,7 +1162,7 @@ func TestActuatorSeamIsConsulted(t *testing.T) {
 // it refuses nonsense, reports what it did, and never becomes automatic.
 func TestAdminPruneIsExplicitAndReportsWhatItRemoved(t *testing.T) {
 	h := newHarness(t)
-	admin := httptest.NewServer(adminMux(h.store, h.led, ""))
+	admin := httptest.NewServer(adminMux(h.store, h.led, h.tis, ""))
 	defer admin.Close()
 
 	post := func(path string) (int, string) {
@@ -1202,5 +1202,75 @@ func TestAdminPruneIsExplicitAndReportsWhatItRemoved(t *testing.T) {
 	}
 	if len(got.Pruned) != 0 {
 		t.Errorf("nothing should have been pruned from an unrolled chain: %s", body)
+	}
+}
+
+// The admin API's key surface (§5.2). /jwks is the one route here a third
+// party has reason to read, so it must expose the public halves and nothing
+// else; /keys/rotate is the drill and incident path the ≤24h timer cannot
+// serve on demand (§8.3).
+func TestAdminJWKSAndRotate(t *testing.T) {
+	h := newHarness(t)
+	admin := httptest.NewServer(adminMux(h.store, h.led, h.tis, ""))
+	defer admin.Close()
+
+	get := func(path string) (int, string) {
+		resp, err := http.Get(admin.URL + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, string(b)
+	}
+
+	code, body := get("/jwks")
+	if code != http.StatusOK {
+		t.Fatalf("GET /jwks = %d: %s", code, body)
+	}
+	var before struct {
+		Keys []tis.JWK `json:"keys"`
+	}
+	if err := json.Unmarshal([]byte(body), &before); err != nil {
+		t.Fatal(err)
+	}
+	if len(before.Keys) != 1 || before.Keys[0].Kid != h.tis.CurrentKid() {
+		t.Fatalf("want the single current key, got %+v", before.Keys)
+	}
+	// Nothing private may appear in a payload published for verification. The
+	// JWK type has no private field, so this guards the shape of the *response*
+	// rather than the struct — a future hand-rolled encoder is what would break
+	// it, and by then the payload is already leaving the process.
+	for _, forbidden := range []string{`"d"`, "PRIVATE", "BEGIN EC"} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("JWKS response contains %q: %s", forbidden, body)
+		}
+	}
+
+	resp, err := http.Post(admin.URL+"/keys/rotate", "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /keys/rotate = %d", resp.StatusCode)
+	}
+
+	code, body = get("/jwks")
+	var after struct {
+		Keys []tis.JWK `json:"keys"`
+	}
+	json.Unmarshal([]byte(body), &after)
+	if len(after.Keys) != 2 {
+		t.Fatalf("after rotation want 2 published keys, got %d: %s", len(after.Keys), body)
+	}
+	if after.Keys[0].Kid == before.Keys[0].Kid {
+		t.Error("rotation did not change the signing key")
+	}
+	// The displaced key stays published: a verifier holding a token signed a
+	// moment before the rotation must still be able to find its key.
+	if after.Keys[1].Kid != before.Keys[0].Kid {
+		t.Errorf("the displaced key %s is not published as previous; got %+v",
+			before.Keys[0].Kid, after.Keys)
 	}
 }

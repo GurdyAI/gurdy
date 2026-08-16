@@ -41,6 +41,8 @@ Running it:
 # reverse-proxy mode
 go run ./cmd/gurdy-proxy -upstream http://localhost:3000 -listen :8090 -ledger-dir ./led -state-dir ./state
 curl -s localhost:8091/health          # admin API, localhost-only + CSRF guard
+curl -s localhost:8091/jwks | jq       # deployment keyring, public halves (§5.2)
+curl -sX POST localhost:8091/keys/rotate      # force a rotation; the timer already keeps it ≤24h
 curl -sX POST localhost:8091/policy/reload    # or SIGHUP; rollback via /policy/rollback
 
 # stdio shim mode — wraps an MCP stdio server; stdout is the protocol channel, decisions to stderr
