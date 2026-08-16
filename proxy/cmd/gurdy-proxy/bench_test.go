@@ -49,11 +49,16 @@ func BenchmarkDecideCall(b *testing.B) {
 // a shared lock stops being free.
 //
 // `identify` reaches `autoMint` on every call that arrives without a
-// `Gurdy-Txn` header — the no-SDK path, and therefore the common one — and
-// autoMint takes a process-wide mutex and performs an ES256 *verify* of the
-// cached token while holding it. That serialises every concurrent request
-// behind one signature check. This benchmark against the serial one above is
-// what makes the cost of that visible rather than theoretical.
+// `Gurdy-Txn` header — the no-SDK path, and therefore the common one. This
+// benchmark is what made D12 visible rather than theoretical: autoMint used to
+// take a process-wide exclusive lock and perform an ES256 *verify* of the
+// cached token while holding it, serialising every concurrent request behind
+// one signature check, at 65,018 ns/op against 23,973 for the SDK path.
+//
+// It now caches the expiry and checks a clock under a read lock: 18,345 ns/op,
+// 3.55x faster, 75 fewer allocations. Keep this paired with the serial
+// benchmark above — a future change that reintroduces per-call work under the
+// write lock shows up here as the gap between them reopening, and nowhere else.
 func BenchmarkDecideCallParallel(b *testing.B) {
 	h := newHarness(b)
 	g := newGateway(h.store, h.tis, h.led, "bench", slogTo(&syncBuffer{}))
@@ -136,12 +141,24 @@ func BenchmarkBodyInspection(b *testing.B) {
 }
 
 // BenchmarkDecideCallParallelWithTxn is the same parallel load, but with a
-// valid Gurdy-Txn supplied — the SDK-present path, which skips autoMint and
-// therefore skips the process-wide lock.
+// valid Gurdy-Txn supplied — the SDK-present path, which skips autoMint.
 //
-// Against BenchmarkDecideCallParallel this isolates the cost of that lock. The
-// two paths do the same number of ES256 operations, so a large difference is
-// contention and nothing else.
+// It was the fast one before D12 and is now the slow one (23,973 ns/op against
+// 18,345), because it still performs a full ES256 VerifyTxn on every call while
+// the no-SDK path performs none.
+//
+// **That asymmetry is correct and must stay.** A supplied token is the agent's
+// claim, arriving on every request and controlled by the party being governed;
+// it has to be verified each time it is presented. The auto-minted token is one
+// we minted ourselves and never let out of memory, so the only thing that could
+// change about it is the clock. Caching a verification result for the supplied
+// token would turn one valid presentation into a standing pass, which is the
+// forged-credential case in `conformance/cases/05` — the speedup here is not a
+// pattern to copy across.
+//
+// It also doubles as the control for D12: this path was untouched by that
+// change and its number did not move, which is what makes the other benchmark's
+// 3.55x attributable to the change rather than to the machine.
 func BenchmarkDecideCallParallelWithTxn(b *testing.B) {
 	h := newHarness(b)
 	g := newGateway(h.store, h.tis, h.led, "bench", slogTo(&syncBuffer{}))

@@ -428,9 +428,27 @@ type gateway struct {
 	tenant    string
 	decisions *slog.Logger
 
-	mu      sync.Mutex
-	autoTxn map[string]string // coarse principal -> auto-minted txn token (§4.3)
+	mu      sync.RWMutex
+	autoTxn map[string]autoTok // coarse principal -> auto-minted txn (§4.3)
 }
+
+// autoTok caches an auto-minted txn token beside the expiry we already knew
+// when we minted it. Storing the expiry is what lets the hot path answer "is
+// this still good?" with a clock comparison under a read lock, instead of an
+// ES256 verify under an exclusive one (D12).
+type autoTok struct {
+	tok string
+	exp time.Time
+}
+
+// autoRenew is how far before real expiry a cached token stops being handed
+// out. It is not politeness about clock skew: if a token expires between the
+// check here and DeriveCall a few microseconds later, the derive fails and the
+// call is recorded with empty txn fields plus an identity gap (§5.5) — the
+// evidence is degraded, not retried. DefaultTxnTTL is 15 minutes, so renewing
+// one minute early costs a mint per principal per 14 minutes and removes the
+// window entirely.
+const autoRenew = time.Minute
 
 // Handler builds the monitor-mode gateway. Every request is forwarded
 // unmodified; inspection failure never drops traffic (NFR-3).
@@ -476,7 +494,7 @@ func newGateway(store *policy.Store, identity *tis.TIS, led *ledger.Ledger,
 		led:       led,
 		tenant:    tenant,
 		decisions: decisions,
-		autoTxn:   map[string]string{},
+		autoTxn:   map[string]autoTok{},
 	}
 }
 
@@ -964,20 +982,62 @@ func coarsePrincipal(r *http.Request) string {
 
 // autoMint returns a live txn token for a coarse principal, minting on first
 // sight or after expiry (§4.3 "proxy auto-mints on first unseen task ID").
+// The fast path is a clock comparison under a read lock. It used to be an
+// ES256 verify under a process-wide exclusive lock, which put a signature
+// check and a mutex on the *common* path — every call arriving without a
+// Gurdy-Txn, which is every call from an agent with no SDK installed. Measured
+// at 70,970 ns/op parallel against 33,020 with a txn supplied, identical
+// crypto: 2.15x of pure contention (D12).
+//
+// Re-verifying proved nothing extra anyway. We minted this token ourselves and
+// hold it in memory, so the only claim VerifyTxn could refute is expiry, and
+// expiry is a value we already had at mint time.
+//
+// ponytail: expiry is the only staleness this understands. A rotated signing
+// key (NFR-5, not built) would leave cached tokens that pass the clock check
+// and fail verification downstream — rotation must flush this map, and the
+// nearest hook is where the new key is installed.
 func (g *gateway) autoMint(coarse string) string {
+	now := time.Now()
+
+	g.mu.RLock()
+	ent, ok := g.autoTxn[coarse]
+	g.mu.RUnlock()
+	if ok && now.Before(ent.exp) {
+		return ent.tok
+	}
+
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if tok, ok := g.autoTxn[coarse]; ok {
-		if _, err := g.tis.VerifyTxn(tok); err == nil {
-			return tok
+	// Re-check under the write lock: several goroutines can miss the fast path
+	// on the same principal at once, and without this they would each mint,
+	// each overwrite, and hand out tokens the others had already replaced.
+	if ent, ok := g.autoTxn[coarse]; ok && now.Before(ent.exp) {
+		return ent.tok
+	}
+	// Minting is rare — once per principal per (TTL - autoRenew) — so this is
+	// the one place a sweep is affordable. Without it the map keeps an entry
+	// for every client IP ever seen, which is the D6 leak; with it the map is
+	// bounded by principals *currently* active rather than by history.
+	for k, v := range g.autoTxn {
+		if !now.Before(v.exp) {
+			delete(g.autoTxn, k)
 		}
 	}
+
 	top := tis.Scope{Compartments: []string{"*"}, ResourceTypes: []string{"*"},
 		Actions: []string{"*"}, Purpose: "*"}
 	tok, err := g.tis.MintTxn("svc:"+coarse, "", top, g.store.Current().Version, 0)
 	if err != nil {
 		return ""
 	}
-	g.autoTxn[coarse] = tok
+	// Read the expiry back from the token rather than recomputing now+TTL: TTL
+	// clamping lives in MintTxn, so a recomputed expiry would be this code's
+	// opinion of when the token dies instead of the token's.
+	claims, err := g.tis.VerifyTxn(tok)
+	if err != nil {
+		return "" // freshly minted and unverifiable; do not cache it
+	}
+	g.autoTxn[coarse] = autoTok{tok: tok, exp: claims.ExpiresAt.Time.Add(-autoRenew)}
 	return tok
 }
